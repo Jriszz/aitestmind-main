@@ -166,6 +166,8 @@ export interface TestCase {
   failCount?: number;
   createdAt?: string;
   updatedAt?: string;
+  /** 派生来源的业务语义指纹（"业务语义 → 用例"同步链路写入；其他来源为 undefined） */
+  sourceFingerprint?: string;
 }
 
 // API信息（从API仓库获取）

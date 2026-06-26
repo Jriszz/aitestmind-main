@@ -13,7 +13,12 @@
  */
 
 import SwaggerParser from '@apidevtools/swagger-parser';
-import type { CapturedApi, ApiParamConstraints } from '@/types/har';
+import type {
+  CapturedApi,
+  ApiParamConstraints,
+  SemanticSnapshot,
+  SemanticDbAssert,
+} from '@/types/har';
 
 // 防止循环引用导致的无限递归
 const MAX_EXAMPLE_DEPTH = 6;
@@ -29,6 +34,7 @@ export interface SwaggerParseResult {
     version: string;
     count: number;
     truncated: boolean; // 是否因超过 MAX_OPERATIONS 而截断
+    semanticsCount: number; // 带业务语义的接口数
   };
 }
 
@@ -265,6 +271,54 @@ function extractQueryParams(operation: any): Record<string, string> {
 }
 
 /**
+ * 提取接口内嵌的业务语义（baseline 快照）
+ * 来源：operation.description（条件约束）、x-side-effect、x-fund-consistency、x-db-asserts
+ * 返回 null 表示该接口没有任何业务语义
+ */
+function extractBusinessSemantics(operation: any): SemanticSnapshot | null {
+  const snapshot: SemanticSnapshot = {};
+  let hasAny = false;
+
+  // description：只有包含条件约束语义时才纳入（避免把纯摘要也当语义）
+  if (typeof operation.description === 'string' && operation.description.trim()) {
+    snapshot.description = operation.description.trim();
+    hasAny = true;
+  }
+
+  const sideEffect = operation['x-side-effect'];
+  if (sideEffect && typeof sideEffect === 'object') {
+    snapshot.sideEffect = {
+      changedFields: Array.isArray(sideEffect.changedFields) ? sideEffect.changedFields : undefined,
+      queryKey: Array.isArray(sideEffect.queryKey) ? sideEffect.queryKey : undefined,
+      writes: Array.isArray(sideEffect.writes) ? sideEffect.writes : undefined,
+    };
+    hasAny = true;
+  }
+
+  const fundConsistency = operation['x-fund-consistency'];
+  if (fundConsistency && typeof fundConsistency === 'object') {
+    snapshot.fundConsistency = { ...fundConsistency };
+    hasAny = true;
+  }
+
+  const dbAsserts = operation['x-db-asserts'];
+  if (Array.isArray(dbAsserts) && dbAsserts.length > 0) {
+    snapshot.dbAsserts = dbAsserts.map(
+      (a: any): SemanticDbAssert => ({
+        desc: a.desc,
+        sql: a.sql,
+        field: a.field,
+        operator: a.operator,
+        expect: a.expect,
+      })
+    );
+    hasAny = true;
+  }
+
+  return hasAny ? snapshot : null;
+}
+
+/**
  * 主入口：把 OpenAPI/Swagger 文档（对象或字符串）解析为 CapturedApi[]
  *
  * @param input 文档内容，可以是 JSON 字符串、YAML 字符串，或已解析的对象
@@ -278,9 +332,10 @@ export async function parseSwaggerDocument(input: string | object): Promise<Swag
       raw = JSON.parse(trimmed);
     } catch {
       try {
+        // @ts-expect-error js-yaml 无类型声明（transitive 依赖），运行时存在
         const yaml = (await import('js-yaml')).default;
         raw = yaml.load(trimmed);
-      } catch (yamlErr: any) {
+      } catch {
         throw new Error('文档既不是有效的 JSON 也不是有效的 YAML，请确认内容为 OpenAPI/Swagger 文档');
       }
     }
@@ -361,6 +416,9 @@ export async function parseSwaggerDocument(input: string | object): Promise<Swag
 
       const fullUrl = `${baseUrl}${pathKey}`;
 
+      // 业务语义（baseline）：从 description / x-* 提取，包装溯源与状态
+      const semanticsBaseline = extractBusinessSemantics(operation);
+
       apis.push({
         id: `swagger_${apis.length}_${upperMethod}_${pathKey}`,
         name,
@@ -382,6 +440,14 @@ export async function parseSwaggerDocument(input: string | object): Promise<Swag
         mimeType: 'application/json',
         importSource: 'swagger',
         paramConstraints: hasConstraints ? constraintsAcc : undefined,
+        businessSemantics: semanticsBaseline
+          ? {
+              baseline: semanticsBaseline,
+              // provenance 的 sourceDoc / importedAt 由导入路由补全（它知道来源与时间）
+              provenance: { docVersion: String(version) },
+              status: 'draft',
+            }
+          : undefined,
       });
     }
   }
@@ -393,6 +459,7 @@ export async function parseSwaggerDocument(input: string | object): Promise<Swag
       version: String(version),
       count: apis.length,
       truncated,
+      semanticsCount: apis.filter((a) => a.businessSemantics?.baseline).length,
     },
   };
 }

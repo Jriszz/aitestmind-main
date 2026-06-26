@@ -208,6 +208,7 @@ export interface ApiRequestSummary {
   mimeType: string; // 响应的 MIME 类型
   importSource?: string; // 导入来源：har | swagger | recording 等
   paramConstraints?: ApiParamConstraints; // 参数约束（来自 Swagger schema，供 AI 生成用例时使用）
+  businessSemantics?: ApiBusinessSemantics; // 业务语义（来自 Swagger x-* 扩展，含生命周期治理元数据）
 }
 
 /**
@@ -228,6 +229,61 @@ export interface ApiParamConstraints {
   }>;
   // 格式约束：字段路径 → format（如 email、date-time、uuid）
   formats?: Record<string, string>;
+}
+
+/**
+ * 业务语义 —— 来自 Swagger 文档每个接口内嵌的 x-* 扩展与 description
+ * 这些语义需要生命周期治理（溯源、文档为主+平台可调、同步 diff 评审）
+ */
+
+/** 数据落库副作用（x-side-effect） */
+export interface SemanticSideEffect {
+  changedFields?: string[]; // 受影响的字段
+  queryKey?: string[]; // 用于查回数据的键
+  writes?: string[]; // 写入的数据表
+}
+
+/** 资金一致性规则（x-fund-consistency），键为中文规则名（守恒/账平/可追溯等），值为说明 */
+export type SemanticFundConsistency = Record<string, string>;
+
+/** 数据库层断言（x-db-asserts 的单条） */
+export interface SemanticDbAssert {
+  desc?: string; // 断言含义
+  sql?: string; // 校验 SQL（本期不执行，仅供 AI 理解）
+  field?: string; // 取值字段
+  operator?: string; // 比较操作符，如 ==、in、>=
+  expect?: unknown; // 期望值
+}
+
+/** 一份语义快照（baseline 或 override 同构） */
+export interface SemanticSnapshot {
+  description?: string; // 接口描述中的跨字段条件约束
+  sideEffect?: SemanticSideEffect;
+  fundConsistency?: SemanticFundConsistency;
+  dbAsserts?: SemanticDbAssert[];
+}
+
+/** 语义溯源元数据 */
+export interface SemanticProvenance {
+  sourceDoc?: string; // 来源文档（URL 或文件名）
+  docVersion?: string; // 文档版本（info.version）
+  importedAt?: string; // 首次导入时间（ISO）
+  lastSyncedAt?: string; // 最近一次同步时间（ISO）
+}
+
+/** 语义生命周期状态 */
+export type SemanticStatus = 'draft' | 'confirmed' | 'deprecated';
+
+/**
+ * 接口的业务语义（双层存储 + 溯源 + 状态）
+ * - baseline：来自文档，权威基线
+ * - override：平台内人工调整，覆盖 baseline（"文档为主、平台可调"）
+ */
+export interface ApiBusinessSemantics {
+  baseline?: SemanticSnapshot;
+  override?: SemanticSnapshot;
+  provenance?: SemanticProvenance;
+  status?: SemanticStatus;
 }
 
 /**

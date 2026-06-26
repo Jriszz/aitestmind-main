@@ -39,6 +39,7 @@ model Api {
   schema          String? // API Schema JSON字符串（供AI理解参数结构）
   generatedParams String? // 自动生成的参数填充值 JSON
   importSource    String  @default("manual") // 导入来源：manual, har
+  businessSemantics String? // 业务语义 JSON：{ baseline, override, provenance, status }（来自 Swagger x-* 扩展）
 
   // 请求信息（JSON格式，自动序列化）
   requestHeaders String? // 请求头
@@ -173,6 +174,11 @@ model TestCase {
   // 分类和标签
   category String? // 分类名称
   tags     String? // JSON数组格式存储标签
+
+  // 语义同步来源指纹（"业务语义 → 用例"增量同步）
+  // 非 null = 由某条业务语义规则派生而来，值为该语义项的指纹；
+  // null    = 人工/对话生成，不参与语义同步
+  sourceFingerprint String?
   
   // 流程图配置（完整的JSON）
   flowConfig String // 存储整个流程图的配置（nodes, edges, variables等）
@@ -200,6 +206,7 @@ model TestCase {
   @@index([createdAt])
   @@index([createdBy])
   @@index([updatedBy])
+  @@index([sourceFingerprint])
 }
 
 // 测试步骤模型

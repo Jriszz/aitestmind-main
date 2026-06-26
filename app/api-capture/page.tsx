@@ -9,6 +9,7 @@ import { useRecordingPolling } from "@/hooks/useRecordingPolling";
 import { useRecordingSSE } from "@/hooks/useRecordingSSE";
 import { RecordingSection } from "@/components/api-capture/RecordingSection";
 import { HarImport } from "@/components/api-capture/HarImport";
+import { SwaggerImport } from "@/components/api-capture/SwaggerImport";
 import { ApiList } from "@/components/api-capture/ApiList";
 import { ApiDetailDialog } from "@/components/api-capture/ApiDetailDialog";
 import { BatchSaveDialog } from "@/components/api-capture/BatchSaveDialog";
@@ -617,7 +618,7 @@ export default function ApiCapturePage() {
         />
       ) : (
         // 未录制：显示录制和导入功能卡片
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
           <RecordingSection
             isRecording={isRecording}
             session={session}
@@ -628,6 +629,10 @@ export default function ApiCapturePage() {
             onResumeRecording={handleResumeRecording}
           />
           <HarImport
+            isRecording={isRecording}
+            onImport={handleImportHar}
+          />
+          <SwaggerImport
             isRecording={isRecording}
             onImport={handleImportHar}
           />

@@ -275,6 +275,54 @@ class VariableManager:
         # 尝试作为全局变量的嵌套路径
         return self.extract_from_response(self.variables, path)
     
+    # 匹配字符串中内嵌的 {{path}} 变量引用
+    # 例如 "Bearer {{step_1.response.data.token}}" 中的 {{...}} 部分
+    # 不匹配运行时函数语法 ${{func()}}（前面带 $），由 runtime_functions 处理
+    _INLINE_VAR_PATTERN = re.compile(r'(?<!\$)\{\{\s*([^{}]+?)\s*\}\}')
+
+    def interpolate_variables(self, text: str) -> Any:
+        """
+        替换字符串中内嵌的 {{path}} 变量引用
+
+        支持两种形态：
+        1. 整串就是一个变量：  "{{step_1.response.data.token}}"
+           → 返回解析后的原始值（保留类型，可能是 dict/list/number）
+        2. 字符串拼接：        "Bearer {{step_1.response.data.token}}"
+           → 把每个 {{...}} 解析为字符串后拼接
+
+        不处理运行时函数语法 ${{func()}}（带 $ 前缀的不匹配）。
+
+        Args:
+            text: 可能包含 {{path}} 的字符串
+
+        Returns:
+            替换后的值（整串单变量时保留原始类型，否则为字符串）
+        """
+        if not isinstance(text, str) or '{{' not in text:
+            return text
+
+        # 整串恰好是单个 {{...}} 时，保留解析结果的原始类型
+        full = self._INLINE_VAR_PATTERN.fullmatch(text)
+        if full:
+            path = full.group(1).strip()
+            value = self.resolve_variable_path(path)
+            print(f"[变量插值] 整串变量 {{{{{path}}}}} -> {value!r}")
+            return value
+
+        # 字符串拼接：逐个把 {{...}} 替换为其字符串形式
+        def _replace(match: 're.Match') -> str:
+            path = match.group(1).strip()
+            value = self.resolve_variable_path(path)
+            if value is None:
+                # 未解析到时保持原样，便于排查（与运行时函数失败行为一致）
+                print(f"[变量插值] 未解析到变量: {path}，保持原样")
+                return match.group(0)
+            return str(value)
+
+        resolved = self._INLINE_VAR_PATTERN.sub(_replace, text)
+        print(f"[变量插值] 拼接替换: {text!r} -> {resolved!r}")
+        return resolved
+
     def resolve_param_value(self, param: Union[ParamValue, Dict[str, Any]]) -> Any:
         """
         解析参数值
@@ -292,7 +340,17 @@ class VariableManager:
         # 如果是固定值
         if param.valueType == ValueType.FIXED:
             value = param.value
-            
+
+            # 🔧 修复：固定值字符串里内嵌的 {{path}} 变量引用也要替换
+            # 例如 "Bearer {{step_1.response.data.token.accessToken}}"
+            # 这样无需把整串设为 variable 类型即可携带前缀/拼接多个变量
+            if isinstance(value, str) and '{{' in value:
+                interpolated = self.interpolate_variables(value)
+                # 整串单变量时可能返回非字符串（dict/list/number），直接返回
+                if not isinstance(interpolated, str):
+                    return interpolated
+                value = interpolated
+
             # 🔧 修复：如果 value 是字符串且看起来是 JSON，尝试解析它
             # 这是为了支持 AI 生成的数据，AI 会将复杂类型序列化为 JSON 字符串
             if isinstance(value, str) and value.strip():
@@ -424,6 +482,9 @@ class VariableManager:
         
         else:
             # 基本类型（string/number/boolean/null）
+            # 先替换内嵌的 {{path}} 变量引用（如 "Bearer {{step_1.response...}}"）
+            if isinstance(body, str) and '{{' in body:
+                body = self.interpolate_variables(body)
             # 也需要检查是否包含运行时函数
             resolved = resolve_value_with_functions(body)
             return resolved

@@ -18,6 +18,7 @@ const PATH_LABEL_MAP: Record<string, string> = {
   '/api-repository': 'apiRepository',
   '/test-orchestration': 'testOrchestration',
   '/ai-generate': 'aiGenerate',
+  '/ai-explore': 'aiExplore',
   '/test-suites': 'testSuites',
   '/execution': 'execution',
   '/settings': 'settings',

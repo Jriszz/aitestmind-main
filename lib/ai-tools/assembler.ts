@@ -471,6 +471,8 @@ export async function assembleTestCase(
     status: 'draft',
     tags: testCasePlan.tags || [],
     flowConfig,
+    // 透传派生来源指纹（语义同步链路），对话生成时为 undefined
+    sourceFingerprint: testCasePlan.sourceFingerprint,
   };
   
   console.log('\n✨ [组装引擎] 测试用例组装完成!');

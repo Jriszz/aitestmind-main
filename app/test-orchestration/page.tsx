@@ -406,6 +406,30 @@ export default function TestOrchestrationPage() {
     setViewMode('edit');
   };
 
+  // 深链接：从 ?edit=<id> 直接打开某条用例编辑（探索生成完成后一键跳转编辑）
+  const deepLinkFiredRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkFiredRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const editId = params.get('edit');
+    if (!editId) return;
+    deepLinkFiredRef.current = true;
+    // 清掉 query，避免刷新重复触发
+    window.history.replaceState({}, '', window.location.pathname);
+    (async () => {
+      try {
+        const res = await fetch(`/api/test-cases/${editId}`);
+        const result = await res.json();
+        if (result.success && result.data) {
+          handleEdit(result.data as TestCase);
+        }
+      } catch (e) {
+        console.error('深链接打开用例失败:', e);
+      }
+    })();
+  }, []);
+
   // 编辑模式下加载 API 仓库分类数据（构建分类树）
   useEffect(() => {
     if (viewMode !== 'edit') return;

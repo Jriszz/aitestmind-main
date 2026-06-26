@@ -118,7 +118,7 @@ async function fetchDocument(url: string): Promise<string> {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { content, url } = body as { content?: string; url?: string };
+    const { content, url, sourceName } = body as { content?: string; url?: string; sourceName?: string };
 
     if (!content && !url) {
       return NextResponse.json(
@@ -144,6 +144,19 @@ export async function POST(request: NextRequest) {
         { success: false, error: '未从文档中解析出任何接口，请确认文档包含 paths 定义' },
         { status: 400 }
       );
+    }
+
+    // 补全语义溯源：sourceDoc（URL 或上传文件名）+ 导入时间
+    const sourceDoc = url ? url.trim() : sourceName || `${result.info.title}.json`;
+    const importedAt = new Date().toISOString();
+    for (const api of result.apis) {
+      if (api.businessSemantics) {
+        api.businessSemantics.provenance = {
+          ...api.businessSemantics.provenance,
+          sourceDoc,
+          importedAt,
+        };
+      }
     }
 
     return NextResponse.json({

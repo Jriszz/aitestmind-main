@@ -100,6 +100,8 @@ export interface TestCasePlan {
   nodes: NodePlan[];
   /** 边列表（执行顺序） */
   edges: EdgePlan[];
+  /** 派生来源的业务语义指纹（"业务语义 → 用例"同步时透传；对话生成时缺省） */
+  sourceFingerprint?: string;
 }
 
 /**

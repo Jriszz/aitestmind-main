@@ -84,8 +84,17 @@ export function ApiDetailDialog({
         if (includeRawHar) {
           setRawHarLoaded(true);
         }
+      } else {
+        // 后端返回 success:false（如 404/500），不要静默吞掉，弹出后端的具体错误
+        console.error('[API详情] 加载失败:', response.status, result);
+        toast({
+          title: t('loadFailed'),
+          description: result.error || `${t('cannotLoadApiDetails')} (HTTP ${response.status})`,
+          variant: 'destructive',
+        });
       }
     } catch (error) {
+      console.error('[API详情] 请求异常:', error);
       toast({
         title: t('loadFailed'),
         description: t('cannotLoadApiDetails'),
@@ -755,13 +764,22 @@ export function ApiDetailDialog({
                   <span className="mr-2">📥</span> 
                   <span className="font-medium">{t('responseInfo')}</span>
                 </TabsTrigger>
-                <TabsTrigger 
+                <TabsTrigger
                   value="raw"
                   className="relative px-6 py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-card/50 data-[state=active]:shadow-none transition-all text-muted-foreground data-[state=active]:text-foreground"
                 >
-                  <span className="mr-2">📋</span> 
+                  <span className="mr-2">📋</span>
                   <span className="font-medium">{t('rawData')}</span>
                 </TabsTrigger>
+                {api.businessSemantics?.baseline && (
+                  <TabsTrigger
+                    value="semantics"
+                    className="relative px-6 py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-card/50 data-[state=active]:shadow-none transition-all text-muted-foreground data-[state=active]:text-foreground"
+                  >
+                    <span className="mr-2">🏦</span>
+                    <span className="font-medium">业务语义</span>
+                  </TabsTrigger>
+                )}
               </TabsList>
             </div>
 
@@ -988,6 +1006,70 @@ export function ApiDetailDialog({
                     )}
                   </div>
                 </TabsContent>
+
+                {api.businessSemantics?.baseline && (
+                  <TabsContent value="semantics" className="m-0 p-6 space-y-5">
+                    {/* 溯源 + 状态 */}
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <Badge
+                        variant={
+                          api.businessSemantics.status === 'confirmed'
+                            ? 'default'
+                            : api.businessSemantics.status === 'deprecated'
+                            ? 'destructive'
+                            : 'secondary'
+                        }
+                      >
+                        {api.businessSemantics.status === 'confirmed'
+                          ? '✓ 已确认'
+                          : api.businessSemantics.status === 'deprecated'
+                          ? '✗ 已废弃'
+                          : '草稿 / 待确认'}
+                      </Badge>
+                      {api.businessSemantics.provenance?.sourceDoc && (
+                        <span className="text-muted-foreground">
+                          来源：{api.businessSemantics.provenance.sourceDoc}
+                          {api.businessSemantics.provenance.docVersion
+                            ? ` (v${api.businessSemantics.provenance.docVersion})`
+                            : ''}
+                        </span>
+                      )}
+                    </div>
+                    {(api.businessSemantics.provenance?.importedAt ||
+                      api.businessSemantics.provenance?.lastSyncedAt) && (
+                      <p className="text-xs text-muted-foreground -mt-3">
+                        {api.businessSemantics.provenance?.importedAt &&
+                          `首次导入：${new Date(api.businessSemantics.provenance.importedAt).toLocaleString()}`}
+                        {api.businessSemantics.provenance?.lastSyncedAt &&
+                          ` · 最近同步：${new Date(api.businessSemantics.provenance.lastSyncedAt).toLocaleString()}`}
+                      </p>
+                    )}
+
+                    {/* 文档基线（baseline） */}
+                    <div>
+                      <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                        <span>📄 文档基线（baseline）</span>
+                      </h4>
+                      {renderJson(api.businessSemantics.baseline, '业务语义 baseline')}
+                    </div>
+
+                    {/* 平台调整（override，若有） */}
+                    {api.businessSemantics.override &&
+                      Object.keys(api.businessSemantics.override).length > 0 && (
+                        <div>
+                          <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                            <span>✏️ 平台调整（override，优先于基线）</span>
+                          </h4>
+                          {renderJson(api.businessSemantics.override, '业务语义 override')}
+                        </div>
+                      )}
+
+                    <p className="text-xs text-muted-foreground">
+                      说明：业务语义来自 Swagger 文档的 x-* 扩展。文档为权威基线，平台调整作为覆盖层；
+                      仅「已确认」状态的语义会注入 AI 用例生成。dbAsserts 中的 SQL 当前不直接执行，仅用于指导断言设计。
+                    </p>
+                  </TabsContent>
+                )}
             </div>
           </Tabs>
         </div>

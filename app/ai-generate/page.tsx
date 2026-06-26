@@ -500,6 +500,22 @@ export default function AIGeneratePage() {
     }
   };
 
+  // 探索生成 → E2E 精修联动：从 ?prefill=...&testType=e2e 自动带入并发起一轮
+  const prefillFiredRef = useRef(false);
+  useEffect(() => {
+    if (prefillFiredRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const prefill = params.get('prefill');
+    const testType = (params.get('testType') as TestType) || 'e2e';
+    if (prefill) {
+      prefillFiredRef.current = true;
+      // 清掉 query，避免刷新重复发起
+      window.history.replaceState({}, '', window.location.pathname);
+      handleSendMessage(prefill, testType);
+    }
+  }, []);
+
   return (
     <div className="h-full flex bg-background">
       {/* 左侧边栏 - 桌面端 */}

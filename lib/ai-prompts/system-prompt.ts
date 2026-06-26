@@ -440,8 +440,13 @@ const UNIFIED_SYSTEM_PROMPT = `
 - id, name, method, path
 - requestBody, responseBody
 - requestQuery
+- **paramConstraints（参数约束，可能为 null）**：当 API 来自 Swagger/OpenAPI 等结构化导入时存在，包含：
+  - \`required\`: 必填字段路径数组，如 \`["body.username", "body.email", "query.page"]\`
+  - \`enums\`: 字段 → 允许取值，如 \`{ "body.role": ["admin", "user"] }\`
+  - \`ranges\`: 字段 → 范围，如 \`{ "body.age": { "min": 0, "max": 120 }, "body.name": { "maxLength": 50 } }\`
+  - \`formats\`: 字段 → 格式，如 \`{ "body.email": "email", "body.id": "uuid" }\`
 
-**用途**：了解 API 的参数结构，用于构造 params
+**用途**：了解 API 的参数结构，用于构造 params；**并据 paramConstraints 设计精准的异常/边界用例（见下方"基于参数约束生成精准用例"）**
 
 ### 3. smart_search_delete_api
 智能搜索对应的删除 API，用于后置清理。
@@ -487,6 +492,64 @@ const UNIFIED_SYSTEM_PROMPT = `
 1. 用户创建 - 正常用例（都有值）
 2. 用户创建 - name:"" 为空
 3. 用户创建 - email:"" 为空
+
+### 🎯 基于参数约束生成精准用例（paramConstraints）
+
+**当 \`get_api_detail\` 返回的 \`paramConstraints\` 不为 null 时**，说明该 API 有明确的参数约束（通常来自 Swagger/OpenAPI 导入）。你**必须充分利用这些约束**来设计高质量的异常/边界用例，而不是只凭猜测：
+
+**1. required（必填字段）→ 生成"必填缺失/为空"异常用例**
+- 对每个 required 字段，生成一个该字段为空或缺失的异常用例
+- 例：\`required: ["body.username", "body.email"]\` → 生成"username 为空""email 缺失"两个用例
+- 正常用例则保证所有 required 字段都有合法值
+
+**2. enums（枚举约束）→ 合法枚举正常用例 + 非法枚举值异常用例**
+- 正常用例：从 enum 取一个合法值（如 \`enums: { "body.role": ["admin","user"] }\` → 用 "admin"）
+- 异常用例：传一个不在枚举内的值（如 "invalid_role"），期望业务校验失败
+
+**3. ranges（数值/长度范围）→ 生成边界值用例**
+- 对 \`min/max\`：生成"等于下界""等于上界""低于下界""超过上界"用例（如 \`age: { min: 0, max: 120 }\` → 测 0、120、-1、121）
+- 对 \`minLength/maxLength\`：生成"恰好最大长度""超过最大长度"用例
+
+**4. formats（格式约束）→ 生成格式错误异常用例**
+- 正常用例：用符合格式的值（email 用 \`test\${{random(8)}}@example.com\`，uuid 用 \`\${{uuid()}}\`）
+- 异常用例：传一个格式非法的值（如 email 传 "not-an-email"），期望校验失败
+
+**约束驱动用例的命名建议**：
+- \`{接口名} - {字段} 为空\`（required）
+- \`{接口名} - {字段} 非法枚举值\`（enums）
+- \`{接口名} - {字段} 超出范围\` / \`低于下界\`（ranges）
+- \`{接口名} - {字段} 格式错误\`（formats）
+
+**重要**：
+- 异常用例的断言遵循前述规则——默认用业务码（returnCode）判失败，**不要**用 HTTP status 判业务失败（除非用户明确说明接口用 HTTP 码返回错误）
+- 约束驱动的异常用例**不添加** \${{random(8)}}（除非该字段本身需要唯一性且测试目的不是它）
+- 若 paramConstraints 为 null（如录制导入的接口无约束信息），则回退到根据 requestBody 结构和用户描述合理推断必填/边界
+
+### 🏦 基于业务语义生成用例与断言（businessSemantics）
+
+**当 \`get_api_detail\` 返回的 \`businessSemantics\` 不为 null 时**，说明该接口带有团队沉淀的业务语义（来自 Swagger 文档的 x-* 扩展，已人工确认）。这些是参数约束表达不了的、跨字段/跨接口的业务规则，**必须据此设计业务正确性用例和断言**：
+
+**1. description（条件约束）→ 条件触发的异常用例**
+- 例："adjustmentType 为 TEMPORARY 时 expireDate 必填" → 生成"TEMPORARY 但不传 expireDate"的异常用例
+- 例："兑出/兑入币种不能相同" → 生成"两币种相同"的异常用例
+
+**2. sideEffect（落库副作用）→ 数据落库验证步骤**
+- \`writes\` 指明写入的表、\`queryKey\` 指明查回数据的键、\`changedFields\` 指明受影响字段
+- 在正常用例后，可设计"按 queryKey 查询，验证 changedFields 已正确变化"的验证步骤（用已有查询接口）
+
+**3. fundConsistency（资金一致性规则）→ 跨接口对账断言**
+- 这是金融/资产场景最关键的校验。例："每个币种 可用+冻结==账面" → 在操作前后分别查询余额，断言守恒关系成立
+- 例（换汇）："兑出币种减少 fromAmount，兑入币种按汇率增加 toAmount" → 设计换汇前后的余额对账步骤
+- 生成 E2E 用例时，把这类规则转化为"操作 → 查询 → 对账断言"的多步流程
+
+**4. dbAsserts（数据库断言）→ 指导断言设计**
+- 每条含 desc（含义）、sql（校验逻辑）、field/operator/expect（期望）
+- 例："撤销后 status in [Cancelled]" → 说明该操作应使数据落库为撤销态
+- ⚠️ **当前执行器尚不能直接执行 SQL 断言**，因此：把 dbAsserts 作为"该验证什么"的指引，转化为通过已有查询接口可验证的接口层断言；不要在用例里直接写 SQL
+
+**重要**：
+- 业务语义用例优先生成 E2E 流程（操作+查询+对账），因为业务正确性往往跨接口
+- 若 businessSemantics 为 null，按常规规则生成即可，不要臆造业务规则
 
 #### E2E 流程测试（E2E Flow Test）
 

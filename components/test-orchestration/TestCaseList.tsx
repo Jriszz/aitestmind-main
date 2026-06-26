@@ -25,6 +25,7 @@ import {
   Layers,
   Box,
   Grid,
+  Sparkles,
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useTranslations } from 'next-intl';
@@ -73,6 +74,7 @@ interface TestCase {
   failCount: number;
   steps: any[];
   flowConfig: any;
+  sourceFingerprint?: string | null; // 非 null = AI 探索生成派生，可"用 AI 精修这条"
   createdByUser?: { id: string; loginName: string; username?: string | null };
   updatedByUser?: { id: string; loginName: string; username?: string | null };
 }
@@ -1252,6 +1254,27 @@ export default function TestCaseList({
                           >
                             <Edit className="h-4 w-4" />
                           </Button>
+                          {testCase.sourceFingerprint && (
+                            <Button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                // 联动 E2E 精修：带入该用例上下文，跳 AI 生成页 E2E 模式
+                                const prefill =
+                                  `请帮我精修这条已有的测试用例「${testCase.name}」（由 AI 探索生成）。` +
+                                  `${testCase.description ? '用例说明：' + testCase.description + '。' : ''}` +
+                                  `请按 E2E 流程审视它的步骤与断言，指出可改进处并给出更完善的版本。`;
+                                const url =
+                                  `/ai-generate?testType=e2e&prefill=${encodeURIComponent(prefill)}`;
+                                window.open(url, '_blank');
+                              }}
+                              variant="ghost"
+                              size="sm"
+                              className="text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                              title="用 AI 精修这条"
+                            >
+                              <Sparkles className="h-4 w-4" />
+                            </Button>
+                          )}
                           {onCopy && (
                             <Button
                               onClick={(e) => {

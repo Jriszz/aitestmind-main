@@ -11,6 +11,8 @@ import {
   TestTube2,
   FolderKanban,
   Sparkles,
+  Telescope,
+  ScrollText,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import Image from "next/image"
@@ -59,6 +61,12 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
       color: "text-purple-600",
     },
     {
+      labelKey: "aiExplore",
+      icon: Telescope,
+      href: "/ai-explore",
+      color: "text-fuchsia-600",
+    },
+    {
       labelKey: "testSuites",
       icon: FolderKanban,
       href: "/test-suites",
@@ -81,6 +89,12 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
       icon: Settings,
       href: "/settings",
       color: "text-gray-500",
+    },
+    {
+      labelKey: "systemLogs",
+      icon: ScrollText,
+      href: "/system-logs",
+      color: "text-amber-600",
     },
   ]
 

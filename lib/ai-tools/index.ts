@@ -7,6 +7,7 @@ import { PrismaClient } from '@prisma/client';
 import { OrchestrationPlan } from '@/types/orchestration';
 import { assembleTestCases, type ApiMetadata } from './assembler';
 import { hierarchicalSearchApis, extractLayerKeywords } from './hierarchical-search';
+import { resolveEffectiveSemantics } from '../semantics-fingerprint';
 
 const prisma = new PrismaClient();
 
@@ -36,7 +37,22 @@ export async function getApiDetail(apiId: string) {
   // 解析 JSON 字段
   // 解析请求头，用于测试用例执行时传递
   const requestHeaders = api.requestHeaders ? JSON.parse(api.requestHeaders) : null;
-  
+
+  // 解析参数约束（来自 Swagger 等结构化导入），供 AI 生成精准的异常/边界用例
+  let paramConstraints = null;
+  if (api.schema) {
+    try {
+      paramConstraints = JSON.parse(api.schema);
+    } catch {
+      paramConstraints = null;
+    }
+  }
+
+  // 解析业务语义（来自 Swagger x-* 扩展）：仅在 status=confirmed 时提供给 AI，
+  // 且 override（平台调整）优先于 baseline（文档），draft/deprecated 不注入。
+  // 复用 resolveEffectiveSemantics —— 与语义指纹/同步引擎同源，避免口径分叉。
+  const businessSemantics = resolveEffectiveSemantics((api as any).businessSemantics);
+
   return {
     id: api.id,
     name: api.name,
@@ -52,6 +68,8 @@ export async function getApiDetail(apiId: string) {
     requestBody: api.requestBody ? JSON.parse(api.requestBody) : null,
     responseStatus: api.responseStatus,
     responseBody: api.responseBody ? JSON.parse(api.responseBody) : null,
+    paramConstraints, // 参数约束：{ required, enums, ranges, formats }，可能为 null
+    businessSemantics, // 业务语义（已确认且 override 优先）：description/sideEffect/fundConsistency/dbAsserts，可能为 null
   };
 }
 
@@ -201,6 +219,10 @@ export async function createTestCases(testCases: any[], userId?: string | null) 
           category: testCase.category,
           tags: JSON.stringify(testCase.tags || []),
           flowConfig: JSON.stringify(flowConfig),
+          // 语义同步链路写入派生指纹；对话生成时为 undefined → 落 null，不参与同步
+          ...(testCase.sourceFingerprint
+            ? { sourceFingerprint: testCase.sourceFingerprint }
+            : {}),
           ...(userId && { createdBy: userId, updatedBy: userId }),
         },
       });
@@ -256,13 +278,23 @@ export async function assembleAndCreateTestCases(params: {
   onProgress?: ProgressCallback;
   /** 当前用户 ID，用于设置创建人/更新人（AI 生成时传入当前登录用户） */
   userId?: string | null;
+  /** 用例名 → 来源语义指纹映射（AI 探索生成链路传入，用于标记派生来源；其他链路缺省） */
+  fingerprintByName?: Record<string, string>;
 }) {
-  const { orchestrationPlan, onProgress, userId } = params;
-  
+  const { orchestrationPlan, onProgress, userId, fingerprintByName } = params;
+
+  // 探索生成链路：按用例名匹配，给每个 TestCasePlan 注入来源指纹（服务端注入，AI 无需感知）
+  if (fingerprintByName) {
+    for (const tc of orchestrationPlan.testCases) {
+      const fp = fingerprintByName[tc.name];
+      if (fp) (tc as any).sourceFingerprint = fp;
+    }
+  }
+
   console.log('\n' + '▓'.repeat(120));
   console.log('🤖 [AI Tools] 收到编排指令，开始自动组装测试用例');
   console.log('▓'.repeat(120));
-  
+
   console.log('📥 [AI Tools] AI 编排指令 (完整):', JSON.stringify(orchestrationPlan, null, 2));
   console.log(`\n📊 [AI Tools] 测试用例数量: ${orchestrationPlan.testCases.length}`);
 
@@ -458,7 +490,7 @@ export const AI_TOOLS = [
     type: "function" as const,
     function: {
       name: "get_api_detail",
-      description: "获取指定 API 的完整信息，包括请求参数、响应示例等",
+      description: "获取指定 API 的完整信息，包括请求参数、响应示例、参数约束（paramConstraints）、以及业务语义（businessSemantics：description 条件约束、sideEffect 落库副作用、fundConsistency 资金一致性规则、dbAsserts 数据库断言）。当 paramConstraints 或 businessSemantics 存在时，应据此设计精准的异常/边界用例与业务正确性断言。",
       parameters: {
         type: "object",
         properties: {

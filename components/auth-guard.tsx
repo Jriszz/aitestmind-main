@@ -46,6 +46,14 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
         return
       }
 
+      // 系统日志页面仅管理员可访问（日志含请求细节/错误栈）
+      if (pathname === '/system-logs' && user.role !== 'admin') {
+        setIsChecking(false)
+        setIsAuthenticated(false)
+        router.push('/dashboard')
+        return
+      }
+
       setIsAuthenticated(true)
       setIsChecking(false)
     } catch (e) {

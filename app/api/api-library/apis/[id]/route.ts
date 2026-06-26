@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { parameterizePath } from '@/lib/path-parameterization';
+import { logger, OperationType } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,11 +15,16 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const startTime = Date.now();
+  let apiId = '';
   try {
     const { id } = await params;
+    apiId = id;
     const { searchParams } = new URL(request.url);
     const includeRawHar = searchParams.get('includeRawHar') === 'true';
-    
+
+    logger.info(OperationType.READ, `GET /api/api-library/apis/${id}`, { includeRawHar });
+
     const api = await prisma.api.findUnique({
       where: { id },
       include: {
@@ -34,6 +40,7 @@ export async function GET(
     });
 
     if (!api) {
+      logger.warn(OperationType.READ, `API不存在: ${id} - 404 (${Date.now() - startTime}ms)`);
       return NextResponse.json(
         { success: false, error: 'API不存在' },
         { status: 404 }
@@ -46,7 +53,10 @@ export async function GET(
       try {
         return JSON.parse(jsonString);
       } catch (e) {
-        console.error('JSON parse error:', e);
+        logger.warn(OperationType.READ, `JSON 字段解析失败 (api=${id})，已降级为 null`, {
+          error: (e as Error).message,
+          snippet: jsonString.slice(0, 200),
+        });
         return null;
       }
     };
@@ -58,16 +68,21 @@ export async function GET(
       requestBody: safeJsonParse(api.requestBody),
       responseHeaders: safeJsonParse(api.responseHeaders),
       responseBody: safeJsonParse(api.responseBody),
+      // 业务语义（来自 Swagger x-* 扩展）：解析为对象供前端展示
+      businessSemantics: safeJsonParse((api as any).businessSemantics),
       // 只在明确请求时才返回 rawHarEntry（数据量大）
       rawHarEntry: includeRawHar ? safeJsonParse(api.rawHarEntry as string) : undefined,
     };
+
+    logger.apiResponse('GET', `/api/api-library/apis/${id}`, OperationType.READ, 200, Date.now() - startTime);
 
     return NextResponse.json({
       success: true,
       data: parsedApi,
     });
   } catch (error: any) {
-    console.error('查询API详情失败:', error);
+    logger.apiResponse('GET', `/api/api-library/apis/${apiId}`, OperationType.READ, 500, Date.now() - startTime);
+    logger.error(OperationType.READ, `查询API详情失败: ${apiId}`, error instanceof Error ? error : new Error(String(error)));
     return NextResponse.json(
       { success: false, error: error.message || '查询失败' },
       { status: 500 }

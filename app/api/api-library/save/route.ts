@@ -5,8 +5,55 @@ import { CapturedApi } from '@/types/har';
 import { safeJsonStringify } from '@/lib/json-utils';
 import { parameterizePath } from '@/lib/path-parameterization';
 import { filterHeadersByWhitelist } from '@/lib/header-filter';
+import { mergeApiData } from '@/lib/api-merge';
+import type { ApiBusinessSemantics } from '@/types/har';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * 合并业务语义（覆盖/同步场景）—— 文档为主、平台可调
+ * - 保留已有 override 与首次导入信息（importedAt）
+ * - baseline 采纳本次文档新值
+ * - 记录 lastSyncedAt
+ * 返回 JSON 字符串（落库）或 undefined（本次无语义且旧记录也无）
+ *
+ * @param existingJson 旧记录的 businessSemantics（DB 中的 JSON 字符串）
+ * @param incoming 本次导入解析出的语义对象（已含 baseline/provenance）
+ */
+function computeMergedSemantics(
+  existingJson: string | null | undefined,
+  incoming: ApiBusinessSemantics | undefined
+): string | undefined {
+  let existing: ApiBusinessSemantics | null = null;
+  if (existingJson) {
+    try {
+      existing = JSON.parse(existingJson);
+    } catch {
+      existing = null;
+    }
+  }
+
+  // 本次无语义：保留旧的（不动），无则不写
+  if (!incoming || !incoming.baseline) {
+    return existingJson || undefined;
+  }
+
+  const now = new Date().toISOString();
+  const merged: ApiBusinessSemantics = {
+    baseline: incoming.baseline, // 文档为主：采纳新 baseline
+    override: existing?.override, // 平台可调：保留人工调整
+    provenance: {
+      ...(existing?.provenance ?? {}),
+      ...incoming.provenance,
+      // 首次导入时间以旧记录为准（若有），同步时间用现在
+      importedAt: existing?.provenance?.importedAt ?? incoming.provenance?.importedAt,
+      lastSyncedAt: now,
+    },
+    status: existing?.status ?? incoming.status ?? 'draft',
+  };
+
+  return safeJsonStringify(merged) || undefined;
+}
 
 /**
  * 批量保存采集的API到数据库
@@ -29,6 +76,7 @@ export async function POST(request: NextRequest) {
       feature?: string;
       subFeature?: string;
       importSource?: string;
+      paramConstraints?: any;
       _overwrite?: boolean;
     }> };
 
@@ -98,6 +146,16 @@ export async function POST(request: NextRequest) {
             
             // 导入来源
             importSource: (api as any).importSource || 'har',
+
+            // API Schema：保存参数约束（来自 Swagger 等结构化导入），供 AI 生成精准用例
+            schema: (api as any).paramConstraints
+              ? safeJsonStringify((api as any).paramConstraints)
+              : undefined,
+
+            // 业务语义（来自 Swagger x-* 扩展）：含 baseline / 溯源 / 状态
+            businessSemantics: (api as any).businessSemantics
+              ? safeJsonStringify((api as any).businessSemantics)
+              : undefined,
             
             // 请求信息（转换为JSON字符串存储）
             requestHeaders: safeJsonStringify(filteredHeaders),
@@ -130,17 +188,36 @@ export async function POST(request: NextRequest) {
           // 根据是否覆盖来决定是创建还是更新
           let savedApi;
           if ((api as any)._overwrite && api.id) {
-            // 覆盖模式：更新现有API
-            console.log(`🔄 [覆盖模式] 更新API: ${api.id} - ${api.name} | 分类: ${apiData.platform}/${apiData.component}/${apiData.feature}/${apiData.subFeature || '-'}`);
-            
+            // 覆盖模式：智能字段级合并，而非整条替换
+            // 读取旧记录，按"新值有意义才覆盖，约束类字段只增不减"的策略合并，
+            // 避免 Swagger 与录制互相冲掉对方的独有信息（约束 / 真实 token / 真实样本）
+            console.log(`🔄 [合并模式] 更新API: ${api.id} - ${api.name} | 分类: ${apiData.platform}/${apiData.component}/${apiData.feature}/${apiData.subFeature || '-'}`);
+
             try {
+              const existing = await prisma.api.findUnique({ where: { id: api.id } });
+              const mergedData = existing
+                ? mergeApiData(existing as any, apiData as any)
+                : apiData;
+
+              // 业务语义按"文档为主、平台可调"治理：
+              // 保留已有 override 与溯源，baseline 采纳本次文档新值，记录同步时间。
+              // （是否采纳由前端语义评审把关后才以 _overwrite 调用本接口）
+              const semanticsValue = computeMergedSemantics(
+                (existing as any)?.businessSemantics,
+                (api as any).businessSemantics
+              );
+
               savedApi = await prisma.api.update({
                 where: { id: api.id },
-                data: { ...apiData, ...(userId && { updatedBy: userId }) },
-        });
-              console.log(`✅ [覆盖成功] API已更新: ${savedApi.id} - ${savedApi.name}`);
+                data: {
+                  ...mergedData,
+                  ...(semanticsValue !== undefined && { businessSemantics: semanticsValue }),
+                  ...(userId && { updatedBy: userId }),
+                } as any,
+              });
+              console.log(`✅ [合并成功] API已更新: ${savedApi.id} - ${savedApi.name} | 来源: ${savedApi.importSource}`);
             } catch (updateError: any) {
-              console.error(`❌ [覆盖失败] API: ${api.id} - ${api.name}`, updateError.message);
+              console.error(`❌ [合并失败] API: ${api.id} - ${api.name}`, updateError.message);
               throw new Error(`更新API失败 (${api.name}): ${updateError.message}`);
             }
           } else {

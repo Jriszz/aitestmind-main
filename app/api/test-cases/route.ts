@@ -15,6 +15,19 @@ function normalizePriority(input: any): 'P0' | 'P1' | 'P2' | 'P3' {
   return input as any;
 }
 
+function normalizeTagsForStatus(tags: any, status?: string | null): string[] {
+  let list: any[] = [];
+  if (Array.isArray(tags)) {
+    list = tags;
+  } else if (typeof tags === 'string') {
+    const parsed = safeJsonParse(tags);
+    list = Array.isArray(parsed) ? parsed : [];
+  }
+
+  const normalized = Array.from(new Set(list.filter((tag) => typeof tag === 'string' && tag.trim())));
+  return status === 'active' ? normalized.filter((tag) => tag !== '待编排') : normalized;
+}
+
 // 清理节点中的执行结果（后端保护层）
 function cleanExecutionFromFlowConfig(flowConfig: any): any {
   if (!flowConfig || !flowConfig.nodes) {
@@ -54,15 +67,17 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
+    const tag = searchParams.get('tag');
     const apiCategoriesRaw = searchParams.get('apiCategories'); // JSON数组：["platform / component / feature / subFeature", ...]，支持 "__NULL__"
     const page = parseInt(searchParams.get('page') || '1');
     const pageSize = parseInt(searchParams.get('pageSize') || '20');
 
     // 记录请求
-    logger.apiRequest('GET', '/api/test-cases', OperationType.READ, { status, apiCategoriesRaw, page, pageSize });
+    logger.apiRequest('GET', '/api/test-cases', OperationType.READ, { status, tag, apiCategoriesRaw, page, pageSize });
 
     const where: any = {};
     if (status) where.status = status;
+    if (tag) where.tags = { contains: `"${tag.replace(/"/g, '\\"')}"` };
 
     // API仓库分类筛选（平台/组件/功能）- 只要用例步骤中存在任一匹配API即可命中
     const parsedApiCategoryKeys = safeJsonParse(apiCategoriesRaw) as unknown;
@@ -209,7 +224,7 @@ export async function POST(request: NextRequest) {
         status: status || 'draft',
         priority: normalizedPriority,
         category: category || null,
-        tags: safeJsonStringify(tags),
+        tags: safeJsonStringify(normalizeTagsForStatus(tags, status || 'draft')),
         flowConfig: safeJsonStringify(cleanedFlowConfig) || '{}',
         ...(userId && { createdBy: userId, updatedBy: userId }),
         steps: {

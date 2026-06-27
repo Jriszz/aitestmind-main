@@ -83,6 +83,8 @@ interface TestCaseListProps {
   testCases: TestCase[];
   statusFilter: 'all' | 'draft' | 'active' | 'archived';
   onStatusFilterChange: (status: 'all' | 'draft' | 'active' | 'archived') => void;
+  pendingOnly?: boolean;
+  onPendingOnlyChange?: (pendingOnly: boolean) => void;
   /** API仓库分类筛选变化（平台/组件/功能），传给父组件做服务端查询 */
   onApiCategoryKeysChange?: (keys: string[]) => void;
   onCreateNew: () => void;
@@ -97,6 +99,8 @@ export default function TestCaseList({
   testCases,
   statusFilter,
   onStatusFilterChange,
+  pendingOnly = false,
+  onPendingOnlyChange,
   onApiCategoryKeysChange,
   onCreateNew,
   onEdit,
@@ -1037,7 +1041,8 @@ export default function TestCaseList({
           </Tabs>
 
           {/* 清空筛选 */}
-          {(searchQuery ||
+          {(pendingOnly ||
+            searchQuery ||
             selectedTag !== 'all' ||
             statusFilter !== 'all' ||
             priorityFilter !== 'all' ||
@@ -1049,6 +1054,7 @@ export default function TestCaseList({
                 setSearchQuery('');
                 setSelectedTag('all');
                 onStatusFilterChange('all');
+                onPendingOnlyChange?.(false);
                 setPriorityFilter('all');
                 setSelectedApiCategories(new Set());
               }}

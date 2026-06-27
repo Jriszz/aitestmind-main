@@ -54,6 +54,7 @@ export function ExploreGenerateDialog({
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [hidden, setHidden] = useState(0);
+  const [failedCount, setFailedCount] = useState(0);
   const [includeGenerated, setIncludeGenerated] = useState(false);
   const [progress, setProgress] = useState<string>('');
   const [createdCount, setCreatedCount] = useState(0);
@@ -76,6 +77,7 @@ export function ExploreGenerateDialog({
         const list: Scenario[] = result.data.scenarios || [];
         setScenarios(list);
         setHidden(result.data.hidden || 0);
+        setFailedCount(result.data.failedCount || 0);
         // 默认全选未生成过的
         setSelected(new Set(list.map((_, i) => i).filter((i) => !list[i].alreadyGenerated)));
         setPhase('review');
@@ -205,10 +207,20 @@ export function ExploreGenerateDialog({
               </div>
             </div>
 
+            {failedCount > 0 && (
+              <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                <span>
+                  ⚠️ {failedCount} 个接口设计超时/失败（多为 AI 调用超时），其场景未列出。可点「让它再发散」重试，或减少一次探索的接口数量。
+                </span>
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
               {scenarios.length === 0 && (
                 <div className="text-center py-12 text-sm text-muted-foreground">
-                  没有可生成的新场景（该范围的语义场景都已生成）。
+                  {failedCount > 0
+                    ? '所有接口的场景设计都超时了。请重试，或一次少选几个接口。'
+                    : '没有可生成的新场景（该范围的语义场景都已生成）。'}
                 </div>
               )}
               {scenarios.map((s, i) => {

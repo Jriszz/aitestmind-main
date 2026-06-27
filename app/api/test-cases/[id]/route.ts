@@ -15,6 +15,19 @@ function normalizePriority(input: any): 'P0' | 'P1' | 'P2' | 'P3' {
   return input as any;
 }
 
+function normalizeTagsForStatus(tags: any, status?: string | null): string[] {
+  let list: any[] = [];
+  if (Array.isArray(tags)) {
+    list = tags;
+  } else if (typeof tags === 'string') {
+    const parsed = safeJsonParse(tags);
+    list = Array.isArray(parsed) ? parsed : [];
+  }
+
+  const normalized = Array.from(new Set(list.filter((tag) => typeof tag === 'string' && tag.trim())));
+  return status === 'active' ? normalized.filter((tag) => tag !== '待编排') : normalized;
+}
+
 // 清理节点中的执行结果（后端保护层）
 function cleanExecutionFromFlowConfig(flowConfig: any): any {
   if (!flowConfig || !flowConfig.nodes) {
@@ -185,7 +198,7 @@ export async function PUT(
           status,
           priority: normalizedPriority,
           category: category || null,
-          tags: safeJsonStringify(tags),
+          tags: safeJsonStringify(normalizeTagsForStatus(tags, status)),
           flowConfig: safeJsonStringify(cleanedFlowConfig),
           ...(userId && { updatedBy: userId }),
           steps: {

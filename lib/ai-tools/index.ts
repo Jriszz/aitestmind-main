@@ -280,14 +280,22 @@ export async function assembleAndCreateTestCases(params: {
   userId?: string | null;
   /** 用例名 → 来源语义指纹映射（AI 探索生成链路传入，用于标记派生来源；其他链路缺省） */
   fingerprintByName?: Record<string, string>;
+  /** 用例名 → 服务端强制补充标签（如 AI探索 / 待编排 / 场景类型标签） */
+  extraTagsByName?: Record<string, string[]>;
 }) {
-  const { orchestrationPlan, onProgress, userId, fingerprintByName } = params;
+  const { orchestrationPlan, onProgress, userId, fingerprintByName, extraTagsByName } = params;
 
-  // 探索生成链路：按用例名匹配，给每个 TestCasePlan 注入来源指纹（服务端注入，AI 无需感知）
-  if (fingerprintByName) {
+  // 探索生成链路：按用例名匹配，注入来源指纹与工作流标签（服务端注入，AI 无需感知）
+  if (fingerprintByName || extraTagsByName) {
     for (const tc of orchestrationPlan.testCases) {
-      const fp = fingerprintByName[tc.name];
+      const fp = fingerprintByName?.[tc.name];
       if (fp) (tc as any).sourceFingerprint = fp;
+
+      const extraTags = extraTagsByName?.[tc.name] ?? [];
+      if (extraTags.length > 0) {
+        const existingTags = Array.isArray(tc.tags) ? tc.tags : [];
+        tc.tags = Array.from(new Set([...existingTags, ...extraTags].filter(Boolean)));
+      }
     }
   }
 

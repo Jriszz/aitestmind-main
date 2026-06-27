@@ -6,6 +6,48 @@
 import OpenAI from 'openai';
 import { AIClient, type AIConfig, type AIMessage, type AITool, type AIResponse } from '../ai-client';
 
+/**
+ * 清洗 tool_calls.arguments —— 某些 OpenAI 兼容网关（如本项目的 Claude 网关）会在
+ * arguments 前面附带垃圾，例如 `{}{"scenarios":[...]}`，导致下游 JSON.parse 失败。
+ * 这里若直接解析失败，则用括号配平提取第一个“能解析的完整 JSON 对象”，返回其规范字符串。
+ * 解析不出来则原样返回（交由下游各自的容错处理）。
+ */
+function sanitizeToolArguments(raw: string | null | undefined): string {
+  const s = (raw ?? '').trim();
+  if (!s) return '{}';
+  try {
+    JSON.parse(s);
+    return s; // 正常网关：原样返回
+  } catch {
+    /* 落到扫描 */
+  }
+  for (let start = s.indexOf('{'); start !== -1; start = s.indexOf('{', start + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        if (--depth === 0) {
+          const candidate = s.slice(start, i + 1);
+          try {
+            const obj = JSON.parse(candidate);
+            // 跳过开头的空 `{}`，取第一个非空对象
+            if (obj && typeof obj === 'object' && Object.keys(obj).length > 0) {
+              return JSON.stringify(obj);
+            }
+          } catch { /* 继续找下一个起点 */ }
+          break;
+        }
+      }
+    }
+  }
+  return s; // 实在清洗不出来，原样返回
+}
+
 export class OpenAIClient extends AIClient {
   private openai: OpenAI;
 
@@ -94,7 +136,7 @@ export class OpenAIClient extends AIClient {
           id: tc.id,
           function: {
             name: tc.function.name,
-            arguments: tc.function.arguments,
+            arguments: sanitizeToolArguments(tc.function.arguments),
           },
         })) || [],
         reasoningContent,

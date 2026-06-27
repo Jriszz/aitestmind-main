@@ -26,6 +26,26 @@ export const dynamic = 'force-dynamic';
 
 type StreamMessage = { type: string; content: string; data?: any };
 
+const SCENARIO_TYPE_TAG: Record<string, string> = {
+  normal: '正常场景',
+  param: '参数校验',
+  business: '业务语义',
+  e2e: 'E2E流程',
+};
+
+function buildScenarioTags(scenario: any): string[] {
+  const tags = ['AI探索', '待编排'];
+  const typeTag = SCENARIO_TYPE_TAG[scenario?.type];
+  if (typeTag) tags.push(typeTag);
+
+  if (scenario?.sourceField === 'fundConsistency') tags.push('资金对账');
+  if (scenario?.sourceField === 'sideEffect' || scenario?.sourceField === 'dbAsserts') {
+    tags.push('落库验证');
+  }
+
+  return Array.from(new Set(tags));
+}
+
 function sendSSE(controller: ReadableStreamDefaultController, message: StreamMessage) {
   controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`));
 }
@@ -46,10 +66,13 @@ export async function POST(request: NextRequest) {
           return;
         }
 
-        // 用例名 → 来源指纹（服务端注入，AI 无需感知）
+        // 用例名 → 来源指纹 / 工作流标签（服务端注入，AI 无需感知）
         const fingerprintByName: Record<string, string> = {};
+        const extraTagsByName: Record<string, string[]> = {};
         for (const s of scenarios) {
-          if (s.title && s.fingerprint) fingerprintByName[s.title] = s.fingerprint;
+          if (!s.title) continue;
+          if (s.fingerprint) fingerprintByName[s.title] = s.fingerprint;
+          extraTagsByName[s.title] = buildScenarioTags(s);
         }
 
         const client = await loadAIClient();
@@ -137,7 +160,8 @@ export async function POST(request: NextRequest) {
                     functionResult = await assembleAndCreateTestCases({
                       ...functionArgs,
                       userId: currentUserId,
-                      fingerprintByName, // 关键：注入来源指纹
+                      fingerprintByName, // 注入来源指纹
+                      extraTagsByName, // 注入 AI探索 / 待编排 / 类型标签
                       onProgress: (progress) => {
                         sendSSE(controller, {
                           type: 'tool_call',

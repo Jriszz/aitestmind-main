@@ -5,7 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Save, Play, ArrowLeft, FileDown, Loader2, Tag, X, Layers, Box, Grid, ChevronRight, ChevronDown } from 'lucide-react';
+import { Save, Play, ArrowLeft, FileDown, Loader2, Tag, X, Layers, Box, Grid, ChevronRight, ChevronDown, Inbox } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import FlowCanvas from '@/components/test-orchestration/FlowCanvas';
 import NodePalette from '@/components/test-orchestration/NodePalette';
@@ -36,6 +36,7 @@ import { Label } from '@/components/ui/label';
 type ViewMode = 'list' | 'edit';
 type TestCasePriority = 'P0' | 'P1' | 'P2' | 'P3';
 type TestCaseListStatusFilter = 'all' | 'draft' | 'active' | 'archived';
+const PENDING_ORCHESTRATION_TAG = '待编排';
 
 function toTestCasePriority(value: unknown): TestCasePriority {
   return value === 'P0' || value === 'P1' || value === 'P2' || value === 'P3' ? value : 'P2';
@@ -116,6 +117,7 @@ export default function TestOrchestrationPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [listStatusFilter, setListStatusFilter] = useState<TestCaseListStatusFilter>('all');
+  const [pendingOnly, setPendingOnly] = useState(false);
   const [apiCategoryKeys, setApiCategoryKeys] = useState<string[]>([]); // API仓库分类筛选（平台/组件/功能）
   const pageSize = 20;
   // 记录最近一次列表查询参数，防止相同条件下重复请求导致接口被频繁刷取
@@ -212,13 +214,16 @@ export default function TestOrchestrationPage() {
     if (viewMode === 'list') {
       loadTestCases();
     }
-  }, [viewMode, page, apiCategoryKeys, listStatusFilter]);
+  }, [viewMode, page, apiCategoryKeys, listStatusFilter, pendingOnly]);
 
   const loadTestCases = async (options?: { force?: boolean }) => {
     // 根据当前分页与筛选条件构造查询 key，用于去重
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (listStatusFilter !== 'all') {
       params.set('status', listStatusFilter);
+    }
+    if (pendingOnly) {
+      params.set('tag', PENDING_ORCHESTRATION_TAG);
     }
     if (apiCategoryKeys.length > 0) {
       params.set('apiCategories', JSON.stringify(apiCategoryKeys));
@@ -1121,6 +1126,10 @@ export default function TestOrchestrationPage() {
           // 清理执行结果（防止保存执行日志到数据库）
           const cleanedNodes = cleanExecutionFromNodes(updatedNodes);
           
+          const nextTags = testCaseStatus === 'active'
+            ? testCaseTags.filter((tag) => tag !== PENDING_ORCHESTRATION_TAG)
+            : testCaseTags;
+
           // 构建测试用例数据
           const sortedNodes = sortNodesByEdges(cleanedNodes, edges);
           const testCase = {
@@ -1128,7 +1137,7 @@ export default function TestOrchestrationPage() {
             description: testCaseDescription,
             status: testCaseStatus,
             category: testCaseCategory,
-            tags: testCaseTags,
+            tags: nextTags,
             flowConfig: {
               nodes: cleanedNodes,
               edges,
@@ -1159,10 +1168,13 @@ export default function TestOrchestrationPage() {
           const result = await response.json();
 
           if (result.success) {
-      toast({
+            if (nextTags.length !== testCaseTags.length) {
+              setTestCaseTags(nextTags);
+            }
+            toast({
               title: t('configSaved'),
-        variant: 'success',
-      });
+              variant: 'success',
+            });
           } else {
             throw new Error(result.error);
           }
@@ -1504,13 +1516,18 @@ export default function TestOrchestrationPage() {
       const sortedNodes = sortNodesByEdges(cleanedNodes, edges);
       console.log('Sorted nodes by edges:', sortedNodes); // 调试日志
 
+      const nextStatus = saveStatus || testCaseStatus;
+      const nextTags = nextStatus === 'active'
+        ? testCaseTags.filter((tag) => tag !== PENDING_ORCHESTRATION_TAG)
+        : testCaseTags;
+
       const testCase = {
         name: testCaseName,
         description: testCaseDescription,
-        status: saveStatus || testCaseStatus,
+        status: nextStatus,
         priority: testCasePriority,
         category: testCaseCategory,
-        tags: testCaseTags,
+        tags: nextTags,
         flowConfig: {
           nodes: cleanedNodes,
           edges,
@@ -1559,7 +1576,10 @@ export default function TestOrchestrationPage() {
         if (saveStatus) {
           setTestCaseStatus(saveStatus);
         }
-        
+        if (nextTags.length !== testCaseTags.length) {
+          setTestCaseTags(nextTags);
+        }
+
         toast({
           title: currentTestCaseId ? t('orchestrationUpdated') : t('orchestrationCreated'),
           variant: 'success',
@@ -1602,23 +1622,52 @@ export default function TestOrchestrationPage() {
     return (
       <div className="flex flex-col h-full">
         <div className="flex-1 overflow-hidden">
-          <TestCaseList
-            testCases={testCases}
-            statusFilter={listStatusFilter}
-            onStatusFilterChange={(status) => {
-              setListStatusFilter(status);
-              setPage(1);
-            }}
-            onApiCategoryKeysChange={(keys) => {
-              setApiCategoryKeys(keys);
-              setPage(1);
-            }}
-            onCreateNew={handleCreateNew}
-            onEdit={handleEdit}
-            onDelete={handleDelete}
-            onBatchDelete={handleBatchDelete}
-            onCopy={handleCopy}
-          />
+          <div className="TestCaseListWrapper flex flex-col h-full">
+            <div className="flex items-center justify-between gap-3 px-6 py-3 border-b bg-background">
+              <div>
+                <h2 className="text-base font-semibold">编排区</h2>
+                <p className="text-xs text-muted-foreground">AI 探索生成的草稿会先进入「待编排」，确认后再发布执行。</p>
+              </div>
+              <Button
+                variant={pendingOnly ? 'default' : 'outline'}
+                size="sm"
+                className="gap-2"
+                onClick={() => {
+                  const next = !pendingOnly;
+                  setPendingOnly(next);
+                  if (next) setListStatusFilter('draft');
+                  setPage(1);
+                }}
+              >
+                <Inbox className="h-4 w-4" />
+                待编排
+              </Button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <TestCaseList
+                testCases={testCases}
+                statusFilter={listStatusFilter}
+                onStatusFilterChange={(status) => {
+                  setListStatusFilter(status);
+                  setPage(1);
+                }}
+                pendingOnly={pendingOnly}
+                onPendingOnlyChange={(next) => {
+                  setPendingOnly(next);
+                  setPage(1);
+                }}
+                onApiCategoryKeysChange={(keys) => {
+                  setApiCategoryKeys(keys);
+                  setPage(1);
+                }}
+                onCreateNew={handleCreateNew}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onBatchDelete={handleBatchDelete}
+                onCopy={handleCopy}
+              />
+            </div>
+          </div>
         </div>
         
         {/* 底部分页控制栏（固定在底部） */}

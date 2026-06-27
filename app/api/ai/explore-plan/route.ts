@@ -11,6 +11,51 @@ import {
 export const dynamic = 'force-dynamic';
 
 /**
+ * 健壮解析 AI 返回的 tool arguments。
+ * 某些 OpenAI 兼容网关（如本项目用的 Claude 网关）会在 arguments 前面附带垃圾，
+ * 例如返回 `{}{"scenarios":[...]}` —— 直接 JSON.parse 会在 position 2 报错。
+ * 这里用括号配平扫描，提取第一个“配平且能解析”的完整 JSON 对象。
+ */
+function parseLooseJsonObject(raw: string): any {
+  if (!raw) return null;
+  // 先试直接解析（正常网关走这条）
+  try {
+    return JSON.parse(raw);
+  } catch {
+    /* 落到下面的扫描 */
+  }
+  // 从每个 '{' 起点尝试做括号配平，找到第一个能解析成功的完整对象
+  for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          const candidate = raw.slice(start, i + 1);
+          try {
+            const obj = JSON.parse(candidate);
+            // 只接受“像那么回事”的对象（含 scenarios），跳过开头的空 `{}`
+            if (obj && typeof obj === 'object' && 'scenarios' in obj) return obj;
+          } catch {
+            /* 这个候选不行，继续找下一个 '{' */
+          }
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * AI 探索 · 场景设计阶段
  * POST /api/ai/explore-plan   body: { apiIds: string[], includeGenerated?: boolean }
  *
@@ -75,10 +120,11 @@ export async function POST(request: NextRequest) {
     );
 
     // 4. 调 AI 自主设计场景清单
-    //    范围大时按 ≤BATCH 个接口分批跑，避免一次喂太多导致 token 截断 / 设计质量下降，
-    //    再合并各批结果。用户感知是"对这个范围设计"，分批对其透明。
+    //    按 ≤BATCH 个接口分批跑——单批做小，避免一次喂太多导致 AI 输出过长 / 超时。
+    //    接口间场景本就独立，拆细不损质量，反而每次调用更快更稳。
     const client = await loadAIClient();
-    const BATCH = 6;
+    const BATCH = 2;
+    let failedCount = 0; // 设计失败（超时/异常）的接口数，用于回传前端，避免"静默返回空"
 
     const runBatch = async (batch: typeof details): Promise<any[]> => {
       const userPayload = {
@@ -89,9 +135,9 @@ export async function POST(request: NextRequest) {
           path: d.path,
           paramConstraints: (d as any).paramConstraints ?? null,
           businessSemantics: (d as any).businessSemantics ?? null,
+          // 设计场景只需"请求形状"，responseBody 往往很大且非必需 —— 省 token、降超时风险
           requestBody: d.requestBody ?? null,
           requestQuery: d.requestQuery ?? null,
-          responseBody: d.responseBody ?? null,
         })),
       };
       const messages: AIMessage[] = [
@@ -109,10 +155,13 @@ export async function POST(request: NextRequest) {
           (tc) => tc.function.name === 'submit_exploration_plan'
         );
         if (!call) return [];
-        return JSON.parse(call.function.arguments)?.scenarios ?? [];
-      } catch (e) {
-        console.error('explore-plan 单批失败，跳过该批:', e);
-        return []; // 单批失败不影响其他批
+        const parsed = parseLooseJsonObject(call.function.arguments);
+        return parsed?.scenarios ?? [];
+      } catch (e: any) {
+        // 单批失败不影响其他批，但要记账，回传给前端提示（不静默吞掉）
+        failedCount += batch.length;
+        console.error(`explore-plan 单批失败（${batch.length} 个接口）:`, e?.message || e);
+        return [];
       }
     };
 
@@ -153,6 +202,8 @@ export async function POST(request: NextRequest) {
         scenarios: visible,
         total: enriched.length,
         hidden: enriched.length - visible.length, // 被去重隐藏的数量
+        failedCount, // 设计失败（多为 AI 超时）的接口数，前端据此提示而非静默
+        totalApis: details.length,
       },
     });
   } catch (error: any) {

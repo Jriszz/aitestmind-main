@@ -50,6 +50,7 @@
     "apiCapture": "API采集",
     "aiGenerate": "AI生成",
     "aiExplore": "AI探索",
+    "functionalCases": "接口用例",
     "testSuites": "测试套件",
     "testOrchestration": "用例编排",
     "execution": "执行监控",
@@ -81,11 +82,15 @@
     "testOrchestration": "用例编排",
     "aiGenerate": "AI 生成",
     "aiExplore": "AI 探索",
+    "functionalCases": "接口用例",
     "testSuites": "测试套件",
     "execution": "执行监控",
     "reports": "测试报告",
     "settings": "设置",
-    "systemLogs": "系统日志"
+    "systemLogs": "系统日志",
+    "groupAi": "AI 工作台",
+    "groupAssets": "资产与执行",
+    "groupSystem": "系统"
   },
   "systemLogs": {
     "title": "系统日志",
@@ -142,7 +147,8 @@
       "urlRequired": "请填写链接",
       "pleaseEnterUrl": "请输入在线文档链接",
       "pleasePasteOrUpload": "请粘贴文档内容或上传文件",
-      "truncatedWarning": "文档接口数量过多，已截断展示，建议分批导入"
+      "truncatedWarning": "文档接口数量过多，已截断展示，建议分批导入",
+      "autoClassifyHint": "已根据文档自动分类：二级分类（组件）取自文档 title，可在下方修改并整批覆盖；三级分类（功能）按各接口的 tag 自动分配，留空即采用各自的 tag，填写则全部统一覆盖。"
     },
     "exportHar": "导出HAR",
     "clearAll": "清空全部",

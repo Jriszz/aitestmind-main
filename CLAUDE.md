@@ -36,6 +36,7 @@ AI 驱动的接口测试平台：用户用自然语言描述需求 → AI 通过
 4. **Swagger 在线拉取必须有 SSRF 防护**，不要去掉。（决策 2）
 5. **x-db-asserts 的 SQL 当前不执行**，只作 AI 理解素材；不要在 flowConfig 生成 SQL 断言节点。（决策 6）
 6. **AI 能力作为"工具 + prompt 指导"扩展**，不要让 AI 直接产出底层 flowConfig/SQL。（决策 7）
+7. **资产管理走"四轴总线"**：Workspace（归属/AI 上下文边界）+ AssetLineage（血缘）+ AssetLifecycle（统一四态 draft/active/deprecated/archived）+ AssetEvent（事件流）。各资产保留强类型表，**绝不做 EAV 通用资产表**；`deprecated` 态不进 AI 上下文；AI 工具默认按 workspace 过滤；事件流不得触发 businessSemantics 自动合并（与决策 5 协同）。（决策 10）
 
 ## 关键文件地图
 
@@ -52,9 +53,12 @@ AI 驱动的接口测试平台：用户用自然语言描述需求 → AI 通过
 | AI system prompt | `lib/ai-prompts/system-prompt.ts` |
 | 编排组装引擎 | `lib/ai-tools/assembler.ts` |
 | 执行器（断言引擎） | `executor/assertion_engine.py` |
+| 资产总线（四轴：Workspace/Lineage/Lifecycle/Event） | `lib/asset-bus/`（实施时新建）、`prisma/schema.prisma` 中 `Workspace` / `AssetLineage` / `AssetEvent` / `SwaggerSource` |
 
 ## 开发约定
 
 - 验证：`npm run build` 通过；改动文件 lint 不引入新的错误类别（项目存量大量 `no-explicit-any`，沿用既有风格，不必为旧代码消除）
 - 改 schema：编辑 `prisma/schema.prisma` 后 `npx prisma db push`（Windows 上 dev 服务器占用引擎 DLL 时 `prisma generate` 可能 EPERM，重启 dev 即可）
 - 文档：用户操作文档在 `docs/user-guide/`；设计决策追加到 `docs/DESIGN_DECISIONS.md`（新增重要决策时同步更新本文件红线清单）
+- **CLAUDE.md 只记原则，不记具体问题**：开发中遇到的 bug、踩坑、问题与其解法记到 `docs/DESIGN_DECISIONS.md`（含"为什么/约束/反例"），本文件只沉淀稳定的原则与红线。
+

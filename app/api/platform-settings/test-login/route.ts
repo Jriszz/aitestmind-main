@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { insecureRequest } from '@/lib/insecure-fetch';
 
 // 测试登录接口并获取Session
 export async function POST() {
@@ -31,15 +32,22 @@ export async function POST() {
       Object.assign(loginHeaders, settings.loginRequestHeaders);
     }
 
+    // 规范化登录 URL：去空格、补协议
+    let loginUrl = (settings.loginApiUrl || '').trim();
+    if (!/^https?:\/\//i.test(loginUrl)) {
+      loginUrl = `https://${loginUrl}`;
+    }
+
     // 发送登录请求
     console.log('[测试登录] 发送请求:', {
-      url: settings.loginApiUrl,
+      url: loginUrl,
       method: settings.loginMethod,
       headers: loginHeaders,
       body: settings.loginRequestBody,
     });
 
-    const response = await fetch(settings.loginApiUrl, {
+    // 用 insecureRequest：跳过自签名/内网证书校验，行为对齐执行器 httpx(verify=False)
+    const response = await insecureRequest(loginUrl, {
       method: settings.loginMethod || 'POST',
       headers: loginHeaders,
       body: settings.loginRequestBody ? JSON.stringify(settings.loginRequestBody) : undefined,
@@ -48,7 +56,7 @@ export async function POST() {
     console.log('[测试登录] 响应状态:', response.status, response.statusText);
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = response.text;
       console.log('[测试登录] 错误响应:', errorText);
       return NextResponse.json(
         {
@@ -60,7 +68,7 @@ export async function POST() {
     }
 
     // 读取响应数据（用于日志）
-    const responseText = await response.text();
+    const responseText = response.text;
     let responseData: any = null;
     
     try {
@@ -71,7 +79,7 @@ export async function POST() {
     }
 
     // 自动提取所有Set-Cookie响应头（类似requests.Session()）
-    const setCookieHeaders = response.headers.getSetCookie?.() || [];
+    const setCookieHeaders = response.setCookieHeaders;
     console.log('[测试登录] Set-Cookie响应头数量:', setCookieHeaders.length);
     console.log('[测试登录] Set-Cookie详情:', setCookieHeaders);
 
@@ -119,7 +127,7 @@ export async function POST() {
       const debugInfo = {
         setCookieHeadersCount: setCookieHeaders.length,
         responseStatus: response.status,
-        responseHeaders: Object.fromEntries(response.headers.entries()),
+        responseHeaders: response.headers,
         responseDataSample: responseText.substring(0, 500),
         hint: '登录接口没有返回Set-Cookie响应头。请检查：1) 登录接口是否配置正确 2) 登录凭据是否正确 3) 该接口是否真的返回cookies',
       };
@@ -136,11 +144,22 @@ export async function POST() {
       );
     }
   } catch (error) {
+    // undici 把真实网络原因藏在 error.cause 里，外层只显示 "fetch failed"
+    const cause = (error as any)?.cause;
     console.error('Error testing login:', error);
+    if (cause) {
+      console.error('Error testing login [cause]:', cause);
+    }
+    const detail =
+      cause?.code || cause?.message
+        ? `${error instanceof Error ? error.message : String(error)} (${cause.code || cause.message})`
+        : error instanceof Error
+          ? error.message
+          : String(error);
     return NextResponse.json(
       {
         success: false,
-        error: `测试登录失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: `测试登录失败: ${detail}`,
       },
       { status: 500 }
     );

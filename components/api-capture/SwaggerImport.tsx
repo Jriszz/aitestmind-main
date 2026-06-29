@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -162,6 +162,15 @@ export function SwaggerImport({ isRecording }: SwaggerImportProps) {
     setStep('classify');
   };
 
+  // 进入分类步骤时，自动用文档 info.title 预填二级分类（component）；
+  // 三级分类（feature）保持为空——空表示"按各接口自身的 tag 分配"。
+  // 用户可手动清除/修改 component，也可填写 feature 进行整批覆盖。
+  useEffect(() => {
+    if (step === 'classify' && docInfo?.title && !classification.component) {
+      setClassification((prev) => ({ ...prev, component: docInfo.title }));
+    }
+  }, [step, docInfo?.title]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const checkConflicts = async (apisToCheck: any[]) => {
     try {
       const response = await fetch('/api/api-library/check-duplicates', {
@@ -204,14 +213,20 @@ export function SwaggerImport({ isRecording }: SwaggerImportProps) {
 
     setLoading(true);
     try {
-      const apisWithClassification = selectedApis.map((api) => ({
-        ...api,
-        platform: classification.platform,
-        component: classification.component,
-        feature: classification.feature,
-        subFeature: classification.subFeature?.trim() || undefined,
-        importSource: 'swagger',
-      }));
+      const apisWithClassification = selectedApis.map((api) => {
+        // platform 强制使用整批选择（必选）。
+        // component / feature：用户在分类页填了就整批统一覆盖；没填则保留各接口自身从 swagger-parser 预填的值
+        // （component ← info.title，feature ← operation.tags[0]）。
+        const apiAny = api as any;
+        return {
+          ...api,
+          platform: classification.platform,
+          component: classification.component ?? apiAny.component,
+          feature: classification.feature ?? apiAny.feature,
+          subFeature: classification.subFeature?.trim() || undefined,
+          importSource: 'swagger',
+        };
+      });
 
       const checkResults = await checkConflicts(apisWithClassification);
       const conflictedApis = checkResults.filter((result: any) => result.isDuplicate);
@@ -675,7 +690,10 @@ export function SwaggerImport({ isRecording }: SwaggerImportProps) {
               )}
             </div>
           ) : (
-            <div className="flex-1 overflow-y-auto px-6 py-4">
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              <div className="text-xs text-muted-foreground p-3 bg-muted/50 rounded-md space-y-1">
+                <p>{t('swagger.autoClassifyHint')}</p>
+              </div>
               <FourLayerSelector value={classification} onChange={setClassification} allowCreate={true} enableSubFeature={true} />
             </div>
           )}

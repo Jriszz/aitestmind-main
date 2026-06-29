@@ -67,6 +67,55 @@ export function safeJsonStringify(value: any): string | null {
 }
 
 /**
+ * 健壮解析 AI tool arguments —— 某些 OpenAI 兼容网关（如本项目的 Claude 网关）会在
+ * arguments 前面附带垃圾，例如 `{}{"cases":[...]}`，直接 JSON.parse 会在 position 2 报错。
+ * 这里用括号配平扫描，提取第一个"配平且能解析、且含 requiredKey"的完整 JSON 对象。
+ *
+ * @param raw     原始 tool arguments 字符串
+ * @param requiredKey 期望对象里必须含有的键（如 'scenarios' / 'cases'）；跳过开头空 `{}`
+ */
+export function parseLooseJsonObject<T = any>(raw: string, requiredKey?: string): T | null {
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw);
+    if (!requiredKey || (obj && typeof obj === 'object' && requiredKey in obj)) {
+      return obj as T;
+    }
+  } catch {
+    /* 落到下面的扫描 */
+  }
+  for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          const candidate = raw.slice(start, i + 1);
+          try {
+            const obj = JSON.parse(candidate);
+            if (obj && typeof obj === 'object' && (!requiredKey || requiredKey in obj)) {
+              return obj as T;
+            }
+          } catch {
+            /* 这个候选不行，继续找下一个 '{' */
+          }
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * 批量解析对象中的 JSON 字段
  * @param obj - 包含 JSON 字段的对象
  * @param fields - 需要解析的字段名数组

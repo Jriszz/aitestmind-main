@@ -223,6 +223,10 @@ export async function createTestCases(testCases: any[], userId?: string | null) 
           ...(testCase.sourceFingerprint
             ? { sourceFingerprint: testCase.sourceFingerprint }
             : {}),
+          // 探索"功能用例→用例"链路写入来源功能用例 id；其他链路 undefined → 落 null
+          ...(testCase.sourceFunctionalCaseId
+            ? { sourceFunctionalCaseId: testCase.sourceFunctionalCaseId }
+            : {}),
           ...(userId && { createdBy: userId, updatedBy: userId }),
         },
       });
@@ -282,14 +286,19 @@ export async function assembleAndCreateTestCases(params: {
   fingerprintByName?: Record<string, string>;
   /** 用例名 → 服务端强制补充标签（如 AI探索 / 待编排 / 场景类型标签） */
   extraTagsByName?: Record<string, string[]>;
+  /** 用例名 → 来源接口功能用例 id（探索"功能用例→用例"链路传入，用于反向追溯；其他链路缺省） */
+  functionalCaseIdByName?: Record<string, string>;
 }) {
-  const { orchestrationPlan, onProgress, userId, fingerprintByName, extraTagsByName } = params;
+  const { orchestrationPlan, onProgress, userId, fingerprintByName, extraTagsByName, functionalCaseIdByName } = params;
 
-  // 探索生成链路：按用例名匹配，注入来源指纹与工作流标签（服务端注入，AI 无需感知）
-  if (fingerprintByName || extraTagsByName) {
+  // 探索生成链路：按用例名匹配，注入来源指纹/功能用例 id 与工作流标签（服务端注入，AI 无需感知）
+  if (fingerprintByName || extraTagsByName || functionalCaseIdByName) {
     for (const tc of orchestrationPlan.testCases) {
       const fp = fingerprintByName?.[tc.name];
       if (fp) (tc as any).sourceFingerprint = fp;
+
+      const fcId = functionalCaseIdByName?.[tc.name];
+      if (fcId) (tc as any).sourceFunctionalCaseId = fcId;
 
       const extraTags = extraTagsByName?.[tc.name] ?? [];
       if (extraTags.length > 0) {

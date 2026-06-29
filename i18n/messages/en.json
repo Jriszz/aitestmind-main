@@ -50,6 +50,7 @@
     "apiCapture": "API Capture",
     "aiGenerate": "AI Generate",
     "aiExplore": "AI Explore",
+    "functionalCases": "Functional Cases",
     "testSuites": "Test Suites",
     "testOrchestration": "Test Orchestration",
     "execution": "Execution",
@@ -81,11 +82,15 @@
     "testOrchestration": "Test Orchestration",
     "aiGenerate": "AI Generate",
     "aiExplore": "AI Explore",
+    "functionalCases": "Functional Cases",
     "testSuites": "Test Suites",
     "execution": "Execution",
     "reports": "Reports",
     "settings": "Settings",
-    "systemLogs": "System Logs"
+    "systemLogs": "System Logs",
+    "groupAi": "AI Workbench",
+    "groupAssets": "Assets & Execution",
+    "groupSystem": "System"
   },
   "systemLogs": {
     "title": "System Logs",
@@ -142,7 +147,8 @@
       "urlRequired": "URL required",
       "pleaseEnterUrl": "Please enter the online document URL",
       "pleasePasteOrUpload": "Please paste the document content or upload a file",
-      "truncatedWarning": "Too many operations in the document; the list was truncated. Consider importing in batches."
+      "truncatedWarning": "Too many operations in the document; the list was truncated. Consider importing in batches.",
+      "autoClassifyHint": "Classification has been auto-filled: Component (level 2) uses the document title and can be edited to override all APIs in this batch. Feature (level 3) is assigned per-API from each operation's tag; leave it empty to keep per-API tags, or set it to override all APIs."
     },
     "exportHar": "Export HAR",
     "clearAll": "Clear All",

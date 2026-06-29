@@ -473,6 +473,8 @@ export async function assembleTestCase(
     flowConfig,
     // 透传派生来源指纹（语义同步链路），对话生成时为 undefined
     sourceFingerprint: testCasePlan.sourceFingerprint,
+    // 透传派生来源功能用例 id（探索"功能用例→用例"链路），其他链路为 undefined
+    sourceFunctionalCaseId: testCasePlan.sourceFunctionalCaseId,
   };
   
   console.log('\n✨ [组装引擎] 测试用例组装完成!');

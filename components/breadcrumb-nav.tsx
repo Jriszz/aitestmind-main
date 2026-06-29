@@ -20,6 +20,7 @@ export function BreadcrumbNav() {
       'api-capture': t('apiCapture'),
       'ai-generate': t('aiGenerate'),
       'ai-explore': t('aiExplore'),
+      'functional-cases': t('functionalCases'),
       'test-suites': t('testSuites'),
       'test-orchestration': t('testOrchestration'),
       'execution': t('execution'),

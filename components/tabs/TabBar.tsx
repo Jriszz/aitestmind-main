@@ -19,6 +19,7 @@ const PATH_LABEL_MAP: Record<string, string> = {
   '/test-orchestration': 'testOrchestration',
   '/ai-generate': 'aiGenerate',
   '/ai-explore': 'aiExplore',
+  '/functional-cases': 'functionalCases',
   '/test-suites': 'testSuites',
   '/execution': 'execution',
   '/settings': 'settings',

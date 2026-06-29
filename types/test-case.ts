@@ -168,6 +168,8 @@ export interface TestCase {
   updatedAt?: string;
   /** 派生来源的业务语义指纹（"业务语义 → 用例"同步链路写入；其他来源为 undefined） */
   sourceFingerprint?: string;
+  /** 派生来源的接口功能用例 id（"接口功能用例 → 用例"探索生成链路写入；其他来源为 undefined） */
+  sourceFunctionalCaseId?: string;
 }
 
 // API信息（从API仓库获取）

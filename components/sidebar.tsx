@@ -12,6 +12,7 @@ import {
   FolderKanban,
   Sparkles,
   Telescope,
+  ClipboardList,
   ScrollText,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -35,68 +36,97 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
       icon: LayoutDashboard,
       href: "/dashboard",
       color: "text-sky-500",
+      group: "top",
     },
+    // —— AI 工作台（主路径） ——
     {
-      labelKey: "apiCapture",
-      icon: TestTube2,
-      href: "/api-capture",
-      color: "text-green-600",
-    },
-    {
-      labelKey: "apiRepository",
-      icon: Database,
-      href: "/api-repository",
-      color: "text-violet-500",
-    },
-    {
-      labelKey: "testOrchestration",
-      icon: GitBranch,
-      href: "/test-orchestration",
-      color: "text-pink-700",
+      labelKey: "aiExplore",
+      icon: Telescope,
+      href: "/ai-explore",
+      color: "text-fuchsia-600",
+      group: "ai",
     },
     {
       labelKey: "aiGenerate",
       icon: Sparkles,
       href: "/ai-generate",
       color: "text-purple-600",
+      group: "ai",
     },
     {
-      labelKey: "aiExplore",
-      icon: Telescope,
-      href: "/ai-explore",
-      color: "text-fuchsia-600",
+      labelKey: "functionalCases",
+      icon: ClipboardList,
+      href: "/functional-cases",
+      color: "text-cyan-600",
+      group: "ai",
+    },
+    // —— 资产与执行（知识来源 + 兜底手动 + 跑测） ——
+    {
+      labelKey: "apiRepository",
+      icon: Database,
+      href: "/api-repository",
+      color: "text-violet-500",
+      group: "assets",
+    },
+    {
+      labelKey: "apiCapture",
+      icon: TestTube2,
+      href: "/api-capture",
+      color: "text-green-600",
+      group: "assets",
+    },
+    {
+      labelKey: "testOrchestration",
+      icon: GitBranch,
+      href: "/test-orchestration",
+      color: "text-pink-700",
+      group: "assets",
     },
     {
       labelKey: "testSuites",
       icon: FolderKanban,
       href: "/test-suites",
       color: "text-orange-700",
+      group: "assets",
     },
     {
       labelKey: "execution",
       icon: Play,
       href: "/execution",
       color: "text-emerald-500",
+      group: "assets",
     },
     // {
     //   labelKey: "reports",
     //   icon: FileText,
     //   href: "/reports",
     //   color: "text-blue-500",
+    //   group: "assets",
     // },
-    {
-      labelKey: "settings",
-      icon: Settings,
-      href: "/settings",
-      color: "text-gray-500",
-    },
+    // —— 系统 ——
     {
       labelKey: "systemLogs",
       icon: ScrollText,
       href: "/system-logs",
       color: "text-amber-600",
+      group: "system",
+    },
+    {
+      labelKey: "settings",
+      icon: Settings,
+      href: "/settings",
+      color: "text-gray-500",
+      group: "system",
     },
   ]
+
+  // 分组标题：top 组不显示标题；其它组在第一条目前插入小标题
+  const groupLabelKey: Record<string, string | null> = {
+    top: null,
+    ai: "groupAi",
+    assets: "groupAssets",
+    system: "groupSystem",
+  }
 
   const handleMenuClick = (e: React.MouseEvent, route: typeof routes[0]) => {
     e.preventDefault()
@@ -151,42 +181,54 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
           )}
         </a>
         <div className="space-y-1">
-          {routes.map((route) => {
+          {routes.map((route, idx) => {
             const isActive = pathname === route.href;
+            const prevGroup = idx > 0 ? routes[idx - 1].group : null;
+            const showGroupHeader =
+              route.group !== prevGroup && groupLabelKey[route.group];
             return (
-              <a
-                key={route.href}
-                href={route.href}
-                onClick={(e) => handleMenuClick(e, route)}
-                className={cn(
-                  "text-[15px] group flex p-3 w-full font-medium cursor-pointer rounded-lg transition-all relative",
-                  isCollapsed ? "justify-center" : "justify-start",
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              <div key={route.href}>
+                {showGroupHeader && !isCollapsed && (
+                  <div className="pt-4 pb-1 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                    {t(groupLabelKey[route.group] as any)}
+                  </div>
                 )}
-                title={isCollapsed ? t(route.labelKey as any) : undefined}
-              >
-                {/* 左侧高亮条 */}
-                {isActive && (
-                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-r-full" />
+                {showGroupHeader && isCollapsed && (
+                  <div className="my-2 mx-2 border-t border-border/50" />
                 )}
-                <div className={cn(
-                  "flex items-center flex-1",
-                  isCollapsed ? "justify-center" : ""
-                )}>
-                  <route.icon 
-                    className={cn(
-                      "h-5 w-5 transition-colors flex-shrink-0",
-                      isCollapsed ? "" : "mr-3",
-                      isActive ? route.color : "opacity-60"
-                    )} 
-                  />
-                  {!isCollapsed && (
-                    <span>{t(route.labelKey as any)}</span>
+                <a
+                  href={route.href}
+                  onClick={(e) => handleMenuClick(e, route)}
+                  className={cn(
+                    "text-[15px] group flex p-3 w-full font-medium cursor-pointer rounded-lg transition-all relative",
+                    isCollapsed ? "justify-center" : "justify-start",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
-                </div>
-              </a>
+                  title={isCollapsed ? t(route.labelKey as any) : undefined}
+                >
+                  {/* 左侧高亮条 */}
+                  {isActive && (
+                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-r-full" />
+                  )}
+                  <div className={cn(
+                    "flex items-center flex-1",
+                    isCollapsed ? "justify-center" : ""
+                  )}>
+                    <route.icon
+                      className={cn(
+                        "h-5 w-5 transition-colors flex-shrink-0",
+                        isCollapsed ? "" : "mr-3",
+                        isActive ? route.color : "opacity-60"
+                      )}
+                    />
+                    {!isCollapsed && (
+                      <span>{t(route.labelKey as any)}</span>
+                    )}
+                  </div>
+                </a>
+              </div>
             );
           })}
         </div>

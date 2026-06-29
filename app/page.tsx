@@ -12,8 +12,8 @@ export default function Home() {
     const token = localStorage.getItem('token');
     
     if (token) {
-      // 已登录，跳转到仪表盘页面
-      router.push('/dashboard');
+      // 已登录，跳转到 AI 探索（主路径）
+      router.push('/ai-explore');
     } else {
       // 未登录，跳转到登录页
       router.push('/login');

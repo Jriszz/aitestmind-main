@@ -179,7 +179,11 @@ model TestCase {
   // 非 null = 由某条业务语义规则派生而来，值为该语义项的指纹；
   // null    = 人工/对话生成，不参与语义同步
   sourceFingerprint String?
-  
+
+  // 派生来源的接口功能用例 id（AI 探索"功能用例→用例"链路）
+  // 非 null = 由某条接口功能用例派生而来；null = 非该链路生成
+  sourceFunctionalCaseId String?
+
   // 流程图配置（完整的JSON）
   flowConfig String // 存储整个流程图的配置（nodes, edges, variables等）
   
@@ -207,6 +211,48 @@ model TestCase {
   @@index([createdBy])
   @@index([updatedBy])
   @@index([sourceFingerprint])
+  @@index([sourceFunctionalCaseId])
+}
+
+// 接口功能用例模型 —— "需求/功能规格 → 人理解的接口功能测试用例"（测试设计层，不可执行）
+// 由 AI 从文档抽取，人工审阅/编辑后，再经 explore-generate 探索 API 生成待编排用例。
+// 与可执行的 TestCase 独立：这里是"测试设计"，TestCase 是"可执行编排"，语义不同不混存。
+model InterfaceFunctionalCase {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  module   String?  // 业务模块（如"换汇"）
+  feature  String?  // 功能（如"换汇申请"）
+  title    String   // 用例名（如"余额不足时提交换汇申请失败"）
+  type     String   @default("normal") // normal|param|business|e2e|permission|state
+
+  objective       String?  // 测试目标（一句话）
+  preconditions   String?  // JSON string[]：前置条件
+  steps           String?  // JSON Step[]：结构化测试步骤（{action,input,expected}）
+  postconditions  String?  // JSON string[]：后置验证（操作后该查什么、状态/数据怎样算对）
+  cleanup         String?  // JSON string[]：数据清理（撤销/删除/恢复，供下游加后置清理节点）
+  expectedResults String?  // JSON string[]：整体预期结果
+  businessRules   String?  // JSON string[]：覆盖的业务规则
+  apiHints        String?  // JSON string[]：可能涉及的接口关键词（供 AI 探索检索）
+
+  priority  String  @default("P2") // P0..P3
+  status    String  @default("draft") // draft|reviewed|readyForOrchestration|generated
+  sourceDoc String? // 来源文档片段/标题（可空）
+
+  // 生成追溯：生成出的待编排 TestCase id 列表（JSON string[]），便于"已生成"标记与跳转
+  generatedCaseIds String?
+
+  createdBy String?
+  updatedBy String?
+  createdByUser User? @relation("FuncCaseCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("FuncCaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@index([module])
+  @@index([feature])
+  @@index([status])
+  @@index([createdAt])
+  @@index([createdBy])
 }
 
 // 测试步骤模型
@@ -692,6 +738,8 @@ model User {
   testSuitesUpdated     TestSuite[]          @relation("TestSuiteUpdatedBy")
   conversationsCreated  Conversation[]       @relation("ConversationCreatedBy")
   conversationsUpdated  Conversation[]       @relation("ConversationUpdatedBy")
+  funcCasesCreated      InterfaceFunctionalCase[] @relation("FuncCaseCreatedBy")
+  funcCasesUpdated      InterfaceFunctionalCase[] @relation("FuncCaseUpdatedBy")
   suiteExecutionsTriggered TestSuiteExecution[] @relation
   
   @@index([loginName])

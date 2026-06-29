@@ -1,10 +1,24 @@
 """
 FastAPI 主应用 - 测试执行器 API
 """
+import sys
+
+# Windows 控制台默认使用 GBK 编码，无法输出日志中的 emoji（如 🚀），
+# 会在启动时抛 UnicodeEncodeError 导致进程崩溃。强制 stdout/stderr 用 UTF-8。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import asyncio
 import os
 import traceback as tb_mod
 from contextlib import asynccontextmanager
+
+# 加载项目根目录的 .env，使 API_PORT / EXECUTOR_URL 等配置与前端保持一致。
+# 直接 `python main.py` 不会自动读取根目录 .env，需显式加载。
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -642,7 +656,7 @@ if __name__ == "__main__":
     
     # 从环境变量读取配置
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "18015"))
+    port = int(os.getenv("API_PORT", "8001"))
     
     print(f"🚀 启动测试执行器 API")
     print(f"📍 地址: http://{host}:{port}")

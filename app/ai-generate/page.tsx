@@ -12,7 +12,7 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useTranslations } from 'next-intl';
 
-export default function AIGeneratePage() {
+export function AIGeneratePageImpl() {
   const t = useTranslations('aiGenerate');
   const tCommon = useTranslations('common');
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
@@ -584,4 +584,12 @@ export default function AIGeneratePage() {
       </div>
     </div>
   );
+}
+
+/**
+ * 路由出口占位：真实实例由 TabManager 常驻挂载（keep-alive），此处返回空避免双挂载。
+ * 见 components/tabs/TabManager.tsx。
+ */
+export default function AIGeneratePage() {
+  return null;
 }

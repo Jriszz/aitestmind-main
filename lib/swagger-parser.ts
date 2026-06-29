@@ -419,6 +419,13 @@ export async function parseSwaggerDocument(input: string | object): Promise<Swag
       // 业务语义（baseline）：从 description / x-* 提取，包装溯源与状态
       const semanticsBaseline = extractBusinessSemantics(operation);
 
+      // 自动分类预填（用户在导入对话框可统一覆盖，不填则各自保留）：
+      // - component（二级）← 文档 info.title
+      // - feature（三级）← operation.tags[0]
+      const tag = Array.isArray(operation.tags) && operation.tags.length > 0
+        ? String(operation.tags[0]).trim() || undefined
+        : undefined;
+
       apis.push({
         id: `swagger_${apis.length}_${upperMethod}_${pathKey}`,
         name,
@@ -448,7 +455,11 @@ export async function parseSwaggerDocument(input: string | object): Promise<Swag
               status: 'draft',
             }
           : undefined,
-      });
+        // 分类预填字段——CapturedApi/ApiRequestSummary 类型未声明，但
+        // app/api/api-library/save/route.ts 通过 (api as any).component/feature 读取，链路已通
+        ...(title ? { component: title } : {}),
+        ...(tag ? { feature: tag } : {}),
+      } as CapturedApi);
     }
   }
 

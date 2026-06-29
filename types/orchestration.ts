@@ -39,7 +39,14 @@ export interface NodeParams {
  * API 节点编排配置
  */
 export interface ApiNodePlan {
-  /** 节点 ID，必须以 step_ 开头，如 "step_1"、"step_2" */
+  /**
+   * 节点 ID，必须以 step_ 开头。命名约定：
+   * - step_pre_<n>：业务数据前置（造数/置态），如 step_pre_1
+   * - step_<n>：主业务步骤，如 step_1
+   * - step_cleanup_<n> 或配 isCleanup: true：后置清理
+   * 命名只是约定（执行器仍按 edges 顺序遍历，不依赖前缀），但人和 AI 可据此识别节点角色。
+   * 登录/认证不出现在节点中——平台通过认证 Token 配置全局注入 Authorization。
+   */
   id: string;
   /** 节点类型 */
   type: 'api';
@@ -102,6 +109,8 @@ export interface TestCasePlan {
   edges: EdgePlan[];
   /** 派生来源的业务语义指纹（"业务语义 → 用例"同步时透传；对话生成时缺省） */
   sourceFingerprint?: string;
+  /** 派生来源的接口功能用例 id（"接口功能用例 → 用例"探索生成时透传；其他链路缺省） */
+  sourceFunctionalCaseId?: string;
 }
 
 /**

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { loadAIClient, type AIMessage } from '@/lib/ai-client';
 import { EXPLORE_PLAN_SYSTEM_PROMPT, EXPLORE_PLAN_TOOL } from '@/lib/ai-prompts/explore-prompt';
 import { getApiDetail } from '@/lib/ai-tools';
+import { getCurrentWorkspace } from '@/lib/auth';
 import {
   resolveEffectiveSemantics,
   enumerateSemanticItems,
@@ -65,6 +66,13 @@ function parseLooseJsonObject(raw: string): any {
  */
 export async function POST(request: NextRequest) {
   try {
+    // 资产管理总线 Step 1：解析当前工作区，AI 探索仅在当前工作区内进行
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const workspaceId = ws.workspaceId;
+
     const { apiIds, includeGenerated = false } = await request.json();
 
     if (!Array.isArray(apiIds) || apiIds.length === 0) {
@@ -78,7 +86,7 @@ export async function POST(request: NextRequest) {
     const details: Awaited<ReturnType<typeof getApiDetail>>[] = [];
     for (const id of apiIds) {
       try {
-        details.push(await getApiDetail(id));
+        details.push(await getApiDetail(id, workspaceId));
       } catch {
         // 单个接口取不到不致命，跳过
       }
@@ -92,8 +100,9 @@ export async function POST(request: NextRequest) {
 
     // 2. 为每个接口枚举"语义项 → 指纹"，建立 (apiId, sourceField, sourceKey) → fingerprint 映射
     //    指纹在服务端计算，AI 无法伪造，保证去重可信
+    //    工作区收敛：避免别工作区同 id 的接口数据被错误带入（虽然 id 是 cuid 几乎不可能撞，但保留兜底）
     const apiRaw = await prisma.api.findMany({
-      where: { id: { in: apiIds } },
+      where: { id: { in: apiIds }, workspaceId },
       select: { id: true, businessSemantics: true } as any,
     });
     const fingerprintIndex = new Map<string, string>(); // key: apiId|field|sourceKey
@@ -108,8 +117,10 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. 查该范围内已生成过的指纹（用于隐形去重）
+    //    工作区收敛：只看当前工作区下的已生成用例
     const generated = await prisma.testCase.findMany({
       where: {
+        workspaceId,
         sourceFingerprint: { not: null },
         steps: { some: { apiId: { in: apiIds } } },
       } as any,

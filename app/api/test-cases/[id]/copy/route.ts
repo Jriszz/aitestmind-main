@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentWorkspace } from '@/lib/auth';
 import { safeJsonParse, safeJsonStringify } from '@/lib/json-utils';
 
 // 清理节点中的执行结果（后端保护层）
@@ -42,10 +42,15 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    
+    // 资产管理总线 Step 1：跨工作区复制被禁止；复制结果归属当前工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     // 获取原始测试用例
-    const originalTestCase = await prisma.testCase.findUnique({
-      where: { id },
+    const originalTestCase = await prisma.testCase.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
       include: {
         steps: {
           orderBy: {
@@ -84,6 +89,7 @@ export async function POST(
         category: originalTestCase.category,
         tags: safeJsonStringify(parsedTags),
         flowConfig: safeJsonStringify(cleanedFlowConfig),
+        workspaceId: ws.workspaceId,
         ...(userId && { createdBy: userId, updatedBy: userId }),
         steps: {
           create: originalTestCase.steps.map((step: any, index: number) => {

@@ -57,9 +57,38 @@ export interface ResponseExtract {
 export interface Assertion {
   id?: string;
   field: string; // 字段路径，如 "status" 或 "data.userId"
-  operator: 'equals' | 'notEquals' | 'contains' | 'notContains' | 'greaterThan' | 'lessThan' | 'exists' | 'notExists';
-  expected?: string | number | boolean;
-  expectedType?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'auto'; // 期望值类型，默认 'auto'
+  /**
+   * 断言操作符。按语义维度分组：
+   *  - 等值/包含：equals / notEquals / contains / notContains
+   *  - 比较：greaterThan / lessThan
+   *  - 存在性：exists / notExists（注意：exists 对空串/空数组/空对象算"存在"，要"非空"用 notEmpty）
+   *  - 非空：notEmpty（柜台流水号/凭证号场景必须用这个，不要用 exists）
+   *  - 集合：in / notIn（柜台业务码枚举，expected 用 JSON 数组形式："[0, 1001, 1002]"）
+   *  - 长度：lengthEquals / lengthGreaterThan / lengthLessThan（分页/明细笔数）
+   *  - 遍历：eachEquals / eachMatches（actual 必须是数组，每一项满足；过滤生效、明细归属一致性）
+   *
+   * 详见 docs/DESIGN_DECISIONS.md 决策 13。
+   */
+  operator:
+    | 'equals' | 'notEquals' | 'contains' | 'notContains'
+    | 'greaterThan' | 'lessThan' | 'exists' | 'notExists'
+    | 'notEmpty' | 'in' | 'notIn'
+    | 'lengthEquals' | 'lengthGreaterThan' | 'lengthLessThan'
+    | 'eachEquals' | 'eachMatches';
+  /**
+   * 期望值。
+   *  - 标量：equals/notEquals/contains/...
+   *  - 数组：in/notIn/eachEquals（也允许 JSON 字符串如 "[0, 1001]"，引擎会兜底解析）
+   *  - 正则字符串：eachMatches
+   *  - 整数：lengthEquals/...
+   *  - 不需要：exists/notExists/notEmpty
+   */
+  expected?: string | number | boolean | Array<string | number | boolean>;
+  /**
+   * 期望值类型。
+   *  - decimal：金额/利率/份额等定点小数（走 decimal.Decimal 比较，避开 float 误差；柜台场景强制）
+   */
+  expectedType?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'decimal' | 'auto';
 }
 
 // 等待配置

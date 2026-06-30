@@ -25,7 +25,8 @@ import VariableSelector from './VariableSelector';
 import HeadersEditor from './HeadersEditor';
 import PathParamsEditor from './PathParamsEditor';
 import QueryParamsEditor from './QueryParamsEditor';
-import { Save, Variable, Type, Trash2 } from 'lucide-react';
+import FeedbackPanel from '@/components/feedback/FeedbackPanel';
+import { Save, Variable, Type, Trash2, Info } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -33,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { deriveNodeRole, getNodeRoleLabel, getNodeRoleDescription } from '@/lib/orchestration/node-role';
 import { Switch } from '@/components/ui/switch';
 import { Node } from '@xyflow/react';
 import { useTranslations } from 'next-intl';
@@ -718,7 +720,49 @@ export default function NodeConfigSheet({
                   </p>
                 )}
               </div>
-              
+
+              {/* 节点角色（只读，从 ID 派生） */}
+              {node && (() => {
+                const role = deriveNodeRole(node);
+                const roleLabel = getNodeRoleLabel(role);
+                const roleDesc = getNodeRoleDescription(role);
+                const tooltipText = `${roleDesc}\n\n角色由节点 ID 前缀（step_pre_* / step_cleanup_*）或 isCleanup 标记推断，不可直接修改。`;
+                return (
+                  <div className="flex items-center gap-3 p-4 border border-[#e5e7eb] dark:border-[#4b5563] rounded-md bg-muted/30">
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm font-semibold text-muted-foreground">
+                          节点角色
+                        </Label>
+                        <span title={tooltipText} className="inline-flex items-center cursor-help">
+                          <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {role === 'precondition' && (
+                          <Badge variant="outline" className="border-amber-400 text-amber-700">
+                            {roleLabel}
+                          </Badge>
+                        )}
+                        {role === 'main' && (
+                          <Badge variant="outline" className="border-blue-400 text-blue-700">
+                            {roleLabel}
+                          </Badge>
+                        )}
+                        {role === 'cleanup' && (
+                          <Badge variant="outline" className="border-slate-400 text-slate-600">
+                            {roleLabel}
+                          </Badge>
+                        )}
+                        <span className="text-xs text-muted-foreground">
+                          (节点 ID: {node.id})
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* 后置清理开关 */}
               <div className="flex items-start gap-3 p-4 border border-[#e5e7eb] dark:border-[#4b5563] rounded-md bg-muted/50">
                 <Trash2 className="h-5 w-5 text-muted-foreground mt-0.5" />
@@ -756,12 +800,13 @@ export default function NodeConfigSheet({
           {/* 根据节点类型显示不同的配置 */}
           {node?.type === 'api' && (
             <Tabs defaultValue="params" className="w-full">
-              <TabsList className="grid w-full grid-cols-5">
+              <TabsList className="grid w-full grid-cols-6">
                 <TabsTrigger value="params">{t('requestParams')}</TabsTrigger>
                 <TabsTrigger value="headers">{t('requestHeaders')}</TabsTrigger>
                 <TabsTrigger value="extract">{t('expectedResponse')}</TabsTrigger>
                 <TabsTrigger value="assertions">{t('assertions')}</TabsTrigger>
                 <TabsTrigger value="wait">{t('wait')}</TabsTrigger>
+                <TabsTrigger value="feedback">反馈</TabsTrigger>
               </TabsList>
 
             {/* 参数配置 */}
@@ -984,6 +1029,15 @@ export default function NodeConfigSheet({
                 currentNodeId={node.id}
                 isApiNodeContext={true}
                 currentApiId={(nodeData as any).apiId}
+              />
+            </TabsContent>
+
+            {/* 反馈 */}
+            <TabsContent value="feedback" className="mt-4">
+              <FeedbackPanel
+                stepNodeId={node.id}
+                apiId={(nodeData as ApiNodeData)?.apiId}
+                title="节点反馈"
               />
             </TabsContent>
           </Tabs>

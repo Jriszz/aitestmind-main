@@ -14,11 +14,13 @@ import {
   Telescope,
   ClipboardList,
   ScrollText,
+  MessageSquare,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
 import { useTabs } from "@/contexts/tabs-context"
+import { WorkspaceSwitcher } from "@/components/workspace-switcher"
 
 interface SidebarProps {
   isCollapsed?: boolean
@@ -58,6 +60,13 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
       icon: ClipboardList,
       href: "/functional-cases",
       color: "text-cyan-600",
+      group: "ai",
+    },
+    {
+      labelKey: "feedback",
+      icon: MessageSquare,
+      href: "/feedback",
+      color: "text-amber-600",
       group: "ai",
     },
     // —— 资产与执行（知识来源 + 兜底手动 + 跑测） ——
@@ -155,7 +164,7 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
             })
           }}
           className={cn(
-            "flex items-center group transition-all mb-14 cursor-pointer",
+            "flex items-center group transition-all mb-4 cursor-pointer",
             isCollapsed ? "justify-center px-0" : "pl-3"
           )}
           title={isCollapsed ? nav('platformTitle') : undefined}
@@ -180,6 +189,9 @@ export function Sidebar({ isCollapsed = false }: SidebarProps) {
             </h1>
           )}
         </a>
+        <div className={cn("mb-3", isCollapsed ? "px-1" : "px-3")}>
+          <WorkspaceSwitcher isCollapsed={isCollapsed} />
+        </div>
         <div className="space-y-1">
           {routes.map((route, idx) => {
             const isActive = pathname === route.href;

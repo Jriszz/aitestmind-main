@@ -1,36 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { parameterizePath } from '@/lib/path-parameterization';
+import { getCurrentWorkspace } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * 检查API是否重复
  * POST /api/api-library/check-duplicates
- * 
- * 请求体：
- * {
- *   apis: Array<{
- *     id?: string;  // 临时ID用于前端关联
- *     method: string;
- *     url: string;
- *     path?: string;
- *     name?: string;
- *   }>
- * }
- * 
- * 响应：
- * {
- *   success: true,
- *   data: Array<{
- *     inputApi: {...},        // 输入的API
- *     isDuplicate: boolean,   // 是否重复
- *     existingApi?: {...}     // 已存在的API（如果重复）
- *   }>
- * }
+ *
+ * 资产管理总线 Step 1（红线）：查重必须严格按当前工作区收敛。
+ * 否则跨工作区相同 method+path 的接口会被误判重复 → 触发字段级合并 →
+ * 把另一工作区的真实 token/响应样本污染给当前工作区，违反决策 4 和决策 10。
  */
 export async function POST(request: NextRequest) {
   try {
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     const body = await request.json();
     const { apis } = body as {
       apis: Array<{
@@ -75,7 +64,9 @@ export async function POST(request: NextRequest) {
 
         // 在数据库中查找是否存在相同 method + path 的API
         // 方案A：对于 GET，历史数据中可能保存了带 query 的 path，这里同时匹配
+        // 红线：workspaceId 必须是第一个键，先按工作区收敛再查重
         const whereForMethodAndPath: any = {
+          workspaceId: ws.workspaceId,
           method: normalizedMethod,
           name: {
             not: '_CLASSIFICATION_PLACEHOLDER_', // 排除占位API

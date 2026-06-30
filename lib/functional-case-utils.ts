@@ -28,6 +28,7 @@ export function rowToCase(
     status: row.status,
     sourceDoc: row.sourceDoc ?? undefined,
     generatedCaseIds: safeJsonParse<string[]>(row.generatedCaseIds) ?? [],
+    sourceFingerprint: row.sourceFingerprint ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -51,6 +52,7 @@ export function caseToData(c: FunctionalCase) {
     priority: c.priority || 'P2',
     status: c.status || 'draft',
     sourceDoc: c.sourceDoc || null,
+    sourceFingerprint: c.sourceFingerprint ?? null,
   };
 }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { getCurrentWorkspace } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +10,12 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(request: NextRequest) {
   try {
+    // 资产管理总线 Step 1：分类删除/API 移动均限定当前工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     const body = await request.json();
     const { platform, component, feature } = body;
 
@@ -39,7 +46,7 @@ export async function POST(request: NextRequest) {
     });
 
     // 将该分类下的所有 API 移动到默认分类
-    const updateWhere: any = { isArchived: false };
+    const updateWhere: any = { workspaceId: ws.workspaceId, isArchived: false };
 
     if (feature !== undefined) {
       updateWhere.platform = platform;

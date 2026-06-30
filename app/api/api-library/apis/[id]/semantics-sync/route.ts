@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { computeSyncPlan, type DerivedCaseRef } from '@/lib/semantics-sync';
+import { getCurrentWorkspace } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,9 +23,14 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    // 资产管理总线 Step 1：跨工作区直接 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
 
-    const api = await prisma.api.findUnique({
-      where: { id },
+    const api = await prisma.api.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
       select: { id: true, name: true, businessSemantics: true } as any,
     });
 
@@ -33,8 +39,10 @@ export async function GET(
     }
 
     // 查"该接口已派生的用例"：sourceFingerprint 非 null 且有步骤引用本接口
+    // 工作区收敛：只看当前工作区的派生用例
     const derivedCases = await prisma.testCase.findMany({
       where: {
+        workspaceId: ws.workspaceId,
         sourceFingerprint: { not: null },
         steps: { some: { apiId: id } },
       } as any,

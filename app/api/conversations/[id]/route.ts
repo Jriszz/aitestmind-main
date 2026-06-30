@@ -8,8 +8,14 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+    // 资产管理总线 Step 1：跨工作区 404
+    const { getCurrentWorkspace } = await import('@/lib/auth');
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
       include: {
         messages: {
           orderBy: { createdAt: 'asc' },
@@ -46,11 +52,24 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const { getCurrentUser } = await import('@/lib/auth');
+    const { getCurrentUser, getCurrentWorkspace } = await import('@/lib/auth');
     const currentUser = await getCurrentUser(request);
     const userId = currentUser?.user?.id ?? null;
+    // 资产管理总线 Step 1：跨工作区 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existing = await prisma.conversation.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
+    }
 
     const body = await request.json();
+    delete body.workspaceId;
     const { title, summary, isStarred, isArchived } = body;
 
     const conversation = await prisma.conversation.update({
@@ -89,6 +108,19 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    // 资产管理总线 Step 1：跨工作区 404
+    const { getCurrentWorkspace } = await import('@/lib/auth');
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existing = await prisma.conversation.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
+    }
     await prisma.conversation.delete({
       where: { id },
     });

@@ -53,4 +53,9 @@ export interface FunctionalCase {
   status?: string;
   sourceDoc?: string;
   generatedCaseIds?: string[];
+  /**
+   * 稳定指纹（由 lib/semantics-fingerprint.ts 的 fingerprintFunctionalCase 计算）。
+   * 服务端落库时按 (workspaceId, sourceFingerprint) 去重；前端透传/展示可选。
+   */
+  sourceFingerprint?: string;
 }

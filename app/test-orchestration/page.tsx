@@ -5,7 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Save, Play, ArrowLeft, FileDown, Loader2, Tag, X, Layers, Box, Grid, ChevronRight, ChevronDown, Inbox } from 'lucide-react';
+import { Save, Play, ArrowLeft, FileDown, Loader2, Tag, X, Layers, Box, Grid, ChevronRight, ChevronDown, Inbox, MessageSquare } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import FlowCanvas from '@/components/test-orchestration/FlowCanvas';
 import NodePalette from '@/components/test-orchestration/NodePalette';
@@ -13,6 +13,8 @@ import ApiSelectorDialog from '@/components/test-orchestration/ApiSelectorDialog
 import NodeConfigSheet from '@/components/test-orchestration/NodeConfigSheet';
 import TestCaseList from '@/components/test-orchestration/TestCaseList';
 import ExecutionLogPanel from '@/components/test-orchestration/ExecutionLogPanel';
+import FeedbackPanel from '@/components/feedback/FeedbackPanel';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { FlowNode, FlowEdge, NodeType, ApiInfo, ApiNodeData, ParallelNodeData } from '@/types/test-case';
 import { Node, Edge } from '@xyflow/react';
 import { useToast } from '@/hooks/use-toast';
@@ -176,6 +178,7 @@ export default function TestOrchestrationPage() {
   const [selectedNode, setSelectedNode] = useState<FlowNode | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null); // 当前选中的节点ID
   const [showConfigSheet, setShowConfigSheet] = useState(false);
+  const [feedbackSheetOpen, setFeedbackSheetOpen] = useState(false);
   const [pendingNodeType, setPendingNodeType] = useState<NodeType | 'parallel-api' | null>(null);
   const [pendingNodePosition, setPendingNodePosition] = useState<{ x: number; y: number } | null>(null);
   
@@ -1248,6 +1251,50 @@ export default function TestOrchestrationPage() {
     });
   }, [nodes, edges, updateNodesAndEdges, selectedNodeId, toast, t]);
 
+  // 处理节点粘贴（来自 FlowCanvas 的 Ctrl+V）
+  // 把新节点追加进 state，并把它们设为选中（方便用户继续拖动）
+  const handleNodesPaste = useCallback((pastedNodes: Node[]) => {
+    if (!pastedNodes || pastedNodes.length === 0) return;
+    // 清除原有选中（仅保留新粘贴的为选中）
+    const next = [
+      ...nodes.map((n) => ({ ...n, selected: false })),
+      ...pastedNodes,
+    ];
+    updateNodes(next);
+    // 同步 selectedNodeId 让左侧抽屉/视觉态保持一致：多节点粘贴时取第一个
+    setSelectedNodeId(pastedNodes[0]?.id ?? null);
+    toast({
+      title: t('nodesPasted', { count: pastedNodes.length }),
+      variant: 'success',
+    });
+  }, [nodes, updateNodes, toast, t]);
+
+  // 监听 FlowCanvas 内部派发的复制成功/剪贴板为空事件，统一在父层弹 toast
+  useEffect(() => {
+    const onCopied = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      const count = detail.count ?? 0;
+      if (count > 0) {
+        toast({
+          title: t('nodesCopied', { count }),
+          variant: 'success',
+        });
+      }
+    };
+    const onEmpty = () => {
+      toast({
+        title: t('clipboardEmpty'),
+        variant: 'destructive',
+      });
+    };
+    document.addEventListener('nodes-copied', onCopied);
+    document.addEventListener('nodes-paste-empty', onEmpty);
+    return () => {
+      document.removeEventListener('nodes-copied', onCopied);
+      document.removeEventListener('nodes-paste-empty', onEmpty);
+    };
+  }, [toast, t]);
+
   // 处理节点拖放
   const handleNodeDrop = useCallback(
     (nodeType: string, position: { x: number; y: number }, targetNodeId?: string) => {
@@ -1837,8 +1884,20 @@ export default function TestOrchestrationPage() {
             <Save className="h-4 w-4" />
             {t('saveAndPublish')}
           </Button>
-          <Button 
-            size="sm" 
+          {currentTestCaseId && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFeedbackSheetOpen(true)}
+              className="gap-2"
+              title="查看本用例的反馈历史"
+            >
+              <MessageSquare className="h-4 w-4 text-amber-600" />
+              反馈历史
+            </Button>
+          )}
+          <Button
+            size="sm"
             variant="outline"
             className="gap-2"
             onClick={handleRunTest}
@@ -2033,6 +2092,7 @@ export default function TestOrchestrationPage() {
               onEdgesChange={handleEdgesChange}
               onNodeDrop={handleNodeDrop}
               onNodeDelete={handleNodeDelete}
+              onNodesPaste={handleNodesPaste}
               selectedNodeId={selectedNodeId}
             />
 
@@ -2234,6 +2294,23 @@ export default function TestOrchestrationPage() {
         nodes={nodes}
         onSave={handleSaveNodeConfig}
       />
+
+      {/* 用例级反馈历史 Sheet */}
+      <Sheet open={feedbackSheetOpen} onOpenChange={setFeedbackSheetOpen}>
+        <SheetContent side="right" className="w-[500px] sm:w-[600px] overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>用例反馈历史</SheetTitle>
+          </SheetHeader>
+          <div className="mt-4">
+            {currentTestCaseId && (
+              <FeedbackPanel
+                testCaseId={currentTestCaseId}
+                title="用例反馈"
+              />
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

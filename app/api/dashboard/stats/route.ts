@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspace } from "@/lib/auth";
 
 /**
  * 获取仪表盘统计数据
  * GET /api/dashboard/stats
+ *
+ * 资产管理总线 Step 1：所有 count 均按当前工作区收敛。
+ * 仪表盘是 workspace 级视图，跨工作区聚合留给未来的 admin 全局视图。
  */
 export async function GET(request: NextRequest) {
   try {
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const workspaceId = ws.workspaceId;
+
     // 计算时间范围
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
@@ -25,11 +35,12 @@ export async function GET(request: NextRequest) {
       trendExecutions
     ] = await Promise.all([
       // 1. API总数
-      prisma.api.count(),
-      
+      prisma.api.count({ where: { workspaceId } }),
+
       // 本周新增API数
       prisma.api.count({
         where: {
+          workspaceId,
           createdAt: { gte: weekAgo }
         }
       }),
@@ -37,13 +48,15 @@ export async function GET(request: NextRequest) {
       // 2. 测试用例总数
       prisma.testCase.count({
         where: {
+          workspaceId,
           status: { not: "archived" }
         }
       }),
-      
+
       // 本周新增测试用例
       prisma.testCase.count({
         where: {
+          workspaceId,
           createdAt: { gte: weekAgo },
           status: { not: "archived" }
         }

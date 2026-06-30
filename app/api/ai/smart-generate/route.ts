@@ -6,12 +6,14 @@
 import { NextRequest } from 'next/server';
 import { loadAIClient, type AIMessage } from '@/lib/ai-client';
 import { getSystemPrompt } from '@/lib/ai-prompts/system-prompt';
-import { 
+import {
   AI_TOOLS,
   getApiDetail,
   smartSearchDeleteApi,
   assembleAndCreateTestCases,
   hierarchicalSearchApis,
+  queryApiFeedback,
+  validateTestCase,
 } from '@/lib/ai-tools';
 
 // 定义消息类型
@@ -142,9 +144,20 @@ export async function POST(request: NextRequest) {
     const { userInput, testType = 'api' } = await request.json();
 
     // 当前用户 ID，用于 AI 生成的用例编排设置创建人/更新人
-    const { getCurrentUser } = await import('@/lib/auth');
+    // 当前工作区 ID（资产管理总线 Step 1）：AI 检索/落库都按此过滤，防止跨工作区串味
+    const { getCurrentUser, getCurrentWorkspace } = await import('@/lib/auth');
     const currentUser = await getCurrentUser(request);
     const currentUserId = currentUser?.user?.id ?? null;
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      sendSSE(controller, {
+        type: 'error',
+        content: '未登录或无可用工作区，请重新登录',
+      });
+      controller.close();
+      return;
+    }
+    const currentWorkspaceId = ws.workspaceId;
 
     if (!userInput || !userInput.trim()) {
           sendSSE(controller, {
@@ -294,7 +307,7 @@ export async function POST(request: NextRequest) {
           try {
             // 执行对应的工具函数
             if (functionName === 'hierarchical_search_apis') {
-              functionResult = await hierarchicalSearchApis(functionArgs);
+              functionResult = await hierarchicalSearchApis({ ...functionArgs, workspaceId: currentWorkspaceId });
               console.log(`    ✅ 层级检索找到 ${functionResult.length} 个 API`);
               
               // 显示匹配结果（带4层分类信息）
@@ -321,7 +334,7 @@ export async function POST(request: NextRequest) {
                 },
               });
             } else if (functionName === 'get_api_detail') {
-              functionResult = await getApiDetail(functionArgs.apiId);
+              functionResult = await getApiDetail(functionArgs.apiId, currentWorkspaceId);
               console.log(`    ✅ 获取 API: ${functionResult.name}`);
                   
                   sendSSE(controller, {
@@ -337,8 +350,27 @@ export async function POST(request: NextRequest) {
                     },
                   });
 
+            } else if (functionName === 'query_api_feedback') {
+              functionResult = await queryApiFeedback({ ...functionArgs, workspaceId: currentWorkspaceId });
+              console.log(`    ✅ 查询接口反馈: 命中 ${functionResult.count} 条`);
+
+              sendSSE(controller, {
+                type: 'tool_call',
+                content: 'success',
+                data: {
+                  tool: functionName,
+                  args: functionArgs,
+                  result: functionResult,
+                  duration: Date.now() - startTime,
+                  status: 'success',
+                  summary: functionResult.count > 0
+                    ? `命中 ${functionResult.count} 条避坑反馈`
+                    : `无历史反馈`,
+                },
+              });
+
             } else if (functionName === 'smart_search_delete_api') {
-              functionResult = await smartSearchDeleteApi(functionArgs);
+              functionResult = await smartSearchDeleteApi({ ...functionArgs, workspaceId: currentWorkspaceId });
                   
                   let summary = '';
               if (functionResult.needCleanup) {
@@ -362,6 +394,32 @@ export async function POST(request: NextRequest) {
                     },
                   });
 
+            } else if (functionName === 'validate_test_case') {
+              // 用例有效性自检（v1 · 纯规则）：assemble 前必调
+              functionResult = await validateTestCase(
+                functionArgs.orchestrationPlan,
+                currentWorkspaceId
+              );
+              const total = functionResult.summary?.totalWarnings ?? 0;
+              const rules = functionResult.summary?.rulesTriggered ?? [];
+              const summary = total === 0
+                ? '✅ 自检通过，无 warning'
+                : `⚠️ ${total} 条 warning，触发规则：${rules.join(', ')}`;
+              console.log(`    ${summary}`);
+
+              sendSSE(controller, {
+                type: 'tool_call',
+                content: 'success',
+                data: {
+                  tool: functionName,
+                  args: functionArgs,
+                  result: functionResult,
+                  duration: Date.now() - startTime,
+                  status: 'success',
+                  summary,
+                },
+              });
+
             } else if (functionName === 'assemble_and_create_test_cases') {
               console.log('\n' + '='.repeat(120));
               console.log('🔧 [Route] 调用 assemble_and_create_test_cases');
@@ -369,10 +427,11 @@ export async function POST(request: NextRequest) {
               console.log('📥 [Route] 完整参数:', JSON.stringify(functionArgs, null, 2));
               console.log('='.repeat(120) + '\n');
               
-              // 调用函数并传入进度回调和当前用户 ID（用于创建人/更新人）
+              // 调用函数并传入进度回调和当前用户 ID（用于创建人/更新人）+ 工作区
               functionResult = await assembleAndCreateTestCases({
                 ...functionArgs,
                 userId: currentUserId,
+                workspaceId: currentWorkspaceId,
                 onProgress: (progress) => {
                   console.log(`📊 [Route] 进度更新: ${progress.step}/${progress.totalSteps} - ${progress.message}`);
                   if (progress.detail) {
@@ -418,6 +477,31 @@ export async function POST(request: NextRequest) {
                       summary: functionResult.message,
                     },
                   });
+
+            } else if (functionName === 'validate_test_case') {
+              // 用例有效性自检（v1）：assemble 之前的强制体检
+              functionResult = await validateTestCase(
+                functionArgs.orchestrationPlan,
+                currentWorkspaceId
+              );
+              const total = functionResult.summary?.totalWarnings ?? 0;
+              const rules = (functionResult.summary?.rulesTriggered ?? []).join(', ');
+              console.log(`    ✅ 用例自检完成: ${total} 条 warning${total > 0 ? `（规则：${rules}）` : ''}`);
+
+              sendSSE(controller, {
+                type: 'tool_call',
+                content: 'success',
+                data: {
+                  tool: functionName,
+                  args: functionArgs,
+                  result: functionResult,
+                  duration: Date.now() - startTime,
+                  status: 'success',
+                  summary: total > 0
+                    ? `${total} 条 warning（${rules}）—— 请修复 plan 或在回复中说明意图`
+                    : `自检通过，无 warning`,
+                },
+              });
 
             } else {
               functionResult = { error: '未知的工具' };

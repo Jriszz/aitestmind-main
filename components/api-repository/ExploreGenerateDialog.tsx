@@ -33,7 +33,12 @@ interface Scenario {
  * 让用户实时看到 AI "搜了什么 / 选了哪个接口 / 配没配 cleanup / 最终编排意图"。
  * 与 progress 文本互补：progress 是"现在在干啥"，decision 是"刚刚做了什么决定"。
  */
-type DecisionKind = 'search_api' | 'select_api' | 'cleanup_search' | 'assemble';
+type DecisionKind =
+  | 'search_api'
+  | 'select_api'
+  | 'cleanup_search'
+  | 'assemble'
+  | 'assemble_failed';
 interface Decision {
   kind: DecisionKind;
   title: string;
@@ -42,6 +47,28 @@ interface Decision {
   detail: any;
   /** 客户端时间戳，仅用于 React key（不依赖服务器单调递增） */
   ts: number;
+}
+
+/**
+ * 后端 warning SSE 的归集结构。比 decision 更"业务级"：
+ *   - missing/extra：本批输入与产出不匹配（AI 漏装或多装）
+ *   - max_iterations：迭代上限触发但未产出
+ *   - chunk_error：整批失败
+ * 与 decisions 并列存放，避免污染决策面板的"AI 主动决策"语义。
+ */
+interface ChunkWarning {
+  chunkIdx: number;
+  reason: 'missing' | 'extra' | 'max_iterations' | 'chunk_error';
+  content: string;
+  missing?: string[];
+  extra?: string[];
+}
+
+/** summary 阶段服务端汇总的整体失败批清单 */
+interface FailedChunk {
+  chunkIdx: number;
+  error: string;
+  titles: string[];
 }
 
 interface ExploreGenerateDialogProps {
@@ -65,6 +92,90 @@ const TYPE_LABEL: Record<string, { label: string; cls: string }> = {
   business: { label: '业务', cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-400' },
   e2e: { label: 'E2E', cls: 'bg-orange-500/15 text-orange-600 dark:text-orange-400' },
 };
+
+/**
+ * 警告面板：服务端"集合等值校验 / 迭代上限 / 整批失败"等业务级异常。
+ *
+ * 刻意不与 DecisionPanel 合并：决策面板表达"AI 主动做了什么决定"，警告面板表达
+ * "服务端兜底校验出了什么问题"，两者语义不同（决策包含成功路径，警告全是异常路径）。
+ * 合并后用户分不清"AI 思考"和"系统报错"，视觉信噪比下降。
+ */
+function WarningsPanel({
+  warnings,
+  failedChunks,
+}: {
+  warnings: ChunkWarning[];
+  failedChunks: FailedChunk[];
+}) {
+  if (warnings.length === 0 && failedChunks.length === 0) return null;
+
+  // 按 chunkIdx 聚合：同一批的 missing/extra/max_iterations 合并显示
+  const byChunk = new Map<number, ChunkWarning[]>();
+  for (const w of warnings) {
+    const arr = byChunk.get(w.chunkIdx) ?? [];
+    arr.push(w);
+    byChunk.set(w.chunkIdx, arr);
+  }
+  // failedChunks 也按 chunkIdx 收纳，便于在同一行展示"该批整体失败 + 其细节"
+  const failedByChunk = new Map<number, FailedChunk>();
+  for (const f of failedChunks) failedByChunk.set(f.chunkIdx, f);
+
+  const allChunks = Array.from(
+    new Set<number>([...byChunk.keys(), ...failedByChunk.keys()])
+  ).sort((a, b) => a - b);
+
+  return (
+    <div className="space-y-1.5">
+      {allChunks.map((idx) => {
+        const ws = byChunk.get(idx) ?? [];
+        const failed = failedByChunk.get(idx);
+        const isFatal = !!failed;
+        return (
+          <div
+            key={idx}
+            className={`border rounded-md text-xs p-2 ${
+              isFatal
+                ? 'border-red-500/50 bg-red-500/5 text-red-700 dark:text-red-400'
+                : 'border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-400'
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <div className="flex-1 space-y-1">
+                <div className="font-medium">批次 {idx + 1}</div>
+                {failed && (
+                  <div>
+                    <div>整批失败：{failed.error}</div>
+                    {failed.titles.length > 0 && (
+                      <div className="text-[11px] opacity-80">
+                        受影响：{failed.titles.join('、')}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {ws.map((w, i) => (
+                  <div key={i}>
+                    <div>{w.content}</div>
+                    {w.missing && w.missing.length > 0 && (
+                      <div className="text-[11px] opacity-80">
+                        缺失：{w.missing.join('、')}
+                      </div>
+                    )}
+                    {w.extra && w.extra.length > 0 && (
+                      <div className="text-[11px] opacity-80">
+                        非清单内：{w.extra.join('、')}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 /** 决策面板：把 Agent 内部的关键决策点显示给用户，帮助调试和复盘 */
 function DecisionPanel({
@@ -138,6 +249,14 @@ function DecisionItem({ decision: d }: { decision: Decision }) {
       return {
         Icon: Trash2,
         cls: d.detail?.needCleanup === false ? 'border-amber-500/40 bg-amber-500/5' : 'border-border',
+      };
+    }
+    if (d.kind === 'assemble_failed') {
+      // 落库失败：红框，与 search_api 0 命中区分（图标用 AlertTriangle 但叠 Layers 语义已丢，
+      // 这里直接 AlertTriangle + 红框 + 文案'❌'前缀，让用户能从面板里立刻识别"装失败了"）
+      return {
+        Icon: AlertTriangle,
+        cls: 'border-red-500/50 bg-red-500/5 text-red-700 dark:text-red-400',
       };
     }
     // assemble：节点里如果有 api 节点但 hasCleanup=false，弱提示——可能漏配清理
@@ -237,6 +356,35 @@ function DecisionDetail({ decision: d }: { decision: Decision }) {
       </div>
     );
   }
+  if (d.kind === 'assemble_failed') {
+    // 落库失败：把"AI 当时打算装什么"和"为什么没成"对齐展示。
+    // 这是排错的高价值信息——之前只能看到一条 tool_call:error 不知道编排意图。
+    const planned: string[] = Array.isArray(d.detail?.plannedCaseNames)
+      ? d.detail.plannedCaseNames
+      : [];
+    return (
+      <div className="space-y-1.5 text-[11px]">
+        <div>
+          <span className="text-muted-foreground">错误：</span>
+          <span className="text-red-600 dark:text-red-400 break-words">
+            {d.detail?.error || '未知错误'}
+          </span>
+        </div>
+        {planned.length > 0 && (
+          <div>
+            <div className="text-muted-foreground">AI 当时打算装的用例：</div>
+            <ul className="list-disc list-inside">
+              {planned.map((n, i) => (
+                <li key={i} className="truncate">
+                  {n}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
   // assemble
   const counts: Record<string, number> = d.detail?.assertionCounts ?? {};
   const noAssertion = Object.entries(counts).filter(([, n]) => !n);
@@ -285,6 +433,10 @@ export function ExploreGenerateDialog({
   // Agent 决策可见化（Level 1）：实时累计；done 阶段保留供回看
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [decisionsExpanded, setDecisionsExpanded] = useState(false);
+  // 警告流：服务端"集合等值校验失败 / 迭代上限 / 整批失败"等业务级异常。
+  // 与 decisions 分开，因为这些不是"AI 主动决策"而是"服务端兜底报警"，语义不同。
+  const [warnings, setWarnings] = useState<ChunkWarning[]>([]);
+  const [failedChunks, setFailedChunks] = useState<FailedChunk[]>([]);
   // 本次"打开"是否已启动过生成/设计——防止父组件重渲染导致 effect 反复触发（死循环根因）。
   const startedRef = useRef(false);
 
@@ -348,6 +500,8 @@ export function ExploreGenerateDialog({
   async function runGenerate(body: { scenarios?: any[]; functionalCases?: any[] }) {
     setPhase('generating');
     setDecisions([]); // 每次重新生成清空决策列表
+    setWarnings([]);
+    setFailedChunks([]);
     setDecisionsExpanded(true); // 生成中默认展开决策面板
     setProgress(
       body.functionalCases ? '正在探索接口并按功能用例组装...' : '正在按选定场景组装测试用例...'
@@ -392,9 +546,26 @@ export function ExploreGenerateDialog({
                   ts: prev.length, // 单调递增的本地序号即可，不依赖 Date.now
                 },
               ]);
+            } else if (msg.type === 'warning' && msg.data) {
+              // 服务端业务级警告：missing/extra/max_iterations/chunk_error。
+              // 不阻断生成，但用户必须看见——之前是静默丢弃。
+              setWarnings((prev) => [
+                ...prev,
+                {
+                  chunkIdx: msg.data.chunkIdx ?? 0,
+                  reason: msg.data.reason,
+                  content: msg.content || '',
+                  missing: Array.isArray(msg.data.missing) ? msg.data.missing : undefined,
+                  extra: Array.isArray(msg.data.extra) ? msg.data.extra : undefined,
+                },
+              ]);
             } else if (msg.type === 'summary') {
               created = msg.data?.testCasesCreated || 0;
               createdList = msg.data?.testCases || [];
+              // 服务端汇总的失败批次清单（partial recovery 信息）
+              if (Array.isArray(msg.data?.failedChunks)) {
+                setFailedChunks(msg.data.failedChunks);
+              }
             } else if (msg.type === 'error') {
               throw new Error(msg.content);
             }
@@ -558,11 +729,21 @@ export function ExploreGenerateDialog({
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
               <p className="text-xs text-muted-foreground text-center">{progress}</p>
             </div>
-            <div className="overflow-y-auto pr-1">
-              <div className="text-xs font-medium text-muted-foreground mb-2 sticky top-0 bg-background pb-1">
-                AI 生成决策（实时）
+            <div className="overflow-y-auto pr-1 space-y-3">
+              {(warnings.length > 0 || failedChunks.length > 0) && (
+                <div>
+                  <div className="text-xs font-medium text-amber-600 dark:text-amber-400 mb-1.5 sticky top-0 bg-background pb-1">
+                    ⚠️ 警告（{warnings.length + failedChunks.length}）
+                  </div>
+                  <WarningsPanel warnings={warnings} failedChunks={failedChunks} />
+                </div>
+              )}
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-2 sticky top-0 bg-background pb-1">
+                  AI 生成决策（实时）
+                </div>
+                <DecisionPanel decisions={decisions} realtime />
               </div>
-              <DecisionPanel decisions={decisions} realtime />
             </div>
           </div>
         )}
@@ -571,11 +752,31 @@ export function ExploreGenerateDialog({
         {phase === 'done' && (
           <div className="flex-1 flex flex-col py-6 gap-4 overflow-hidden">
             <div className="flex flex-col items-center gap-2">
-              <div className="text-4xl">🎉</div>
-              <p className="text-sm">
-                已创建 {createdCount} 条场景用例。点击任意一条可直接去编排区编辑调整。
+              <div className="text-4xl">
+                {failedChunks.length > 0 || warnings.length > 0 ? '⚠️' : '🎉'}
+              </div>
+              <p className="text-sm text-center">
+                已创建 {createdCount} 条场景用例。
+                {(failedChunks.length > 0 || warnings.length > 0) && (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    部分批次有警告/失败，请查看下方明细。
+                  </span>
+                )}
+                {failedChunks.length === 0 && warnings.length === 0 && (
+                  <>点击任意一条可直接去编排区编辑调整。</>
+                )}
               </p>
             </div>
+
+            {/* 警告与失败批：放在最显眼位置，让用户决定要不要重试 */}
+            {(warnings.length > 0 || failedChunks.length > 0) && (
+              <div className="border border-amber-500/40 rounded-lg p-3 max-h-[200px] overflow-y-auto">
+                <div className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-2">
+                  本次生成的警告与失败（{warnings.length + failedChunks.length}）
+                </div>
+                <WarningsPanel warnings={warnings} failedChunks={failedChunks} />
+              </div>
+            )}
 
             {/* 决策面板（可折叠回看）：让用户事后能复盘"AI 当时是怎么决定的" */}
             {decisions.length > 0 && (

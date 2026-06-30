@@ -120,3 +120,44 @@ export function enumerateSemanticItems(
 
   return items;
 }
+
+/**
+ * 给一条"接口功能用例"（InterfaceFunctionalCase）算稳定指纹。
+ *
+ * 用途：
+ *   - explore-generate 二次点击同一批功能用例时按 (workspaceId, sourceFingerprint) 去重，
+ *     避免在功能用例表里重复落同一条业务设计。
+ *   - 与 fingerprintItem 共享 sha256 + stableStringify 哈希口径，保持指纹族同构。
+ *
+ * 字段口径（变了任一项指纹就变，与 InterfaceFunctionalCase 表 (module,title) 软键互补）：
+ *   - workspaceId / module / feature / title：业务归属与标题
+ *   - apiHints：去空、去重、排序后纳入；不依赖前端原始顺序，避免漂移
+ *
+ * 不纳入 steps/objective/businessRules 等内容字段——这些是"内容修订"，
+ * 改了应保留同一 fingerprint 让二次点击继续命中复用，不应触发新建。
+ */
+export function fingerprintFunctionalCase(input: {
+  workspaceId?: string | null;
+  module?: string | null;
+  feature?: string | null;
+  title: string;
+  apiHints?: string[] | null;
+}): string {
+  const normHints = Array.isArray(input.apiHints)
+    ? Array.from(
+        new Set(
+          input.apiHints
+            .map((h) => (typeof h === 'string' ? h.trim() : ''))
+            .filter((h) => h.length > 0)
+        )
+      ).sort()
+    : [];
+  const payload = stableStringify({
+    workspaceId: input.workspaceId ?? null,
+    module: input.module ?? null,
+    feature: input.feature ?? null,
+    title: input.title,
+    apiHints: normHints,
+  });
+  return createHash('sha256').update(`functionalCase:${payload}`).digest('hex');
+}

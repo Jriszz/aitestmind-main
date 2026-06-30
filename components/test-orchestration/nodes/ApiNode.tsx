@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { ApiNodeData } from '@/types/test-case';
 import { AlertCircle, Loader2, CheckCircle2, XCircle, Trash2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { deriveNodeRole } from '@/lib/orchestration/node-role';
 
 interface ExecutionStatus {
   status?: 'pending' | 'running' | 'success' | 'error';
@@ -30,6 +31,14 @@ export default function ApiNode({ data, selected, id }: NodeProps) {
   
   // 调试：每次渲染时输出执行状态
   console.log(`[ApiNode渲染] nodeId: ${id}, execution.status: ${execution?.status}, hasExecution: ${!!execution}`);
+
+  // 派生节点角色（前置/主/清理），用于审核场景的视觉标识
+  const role = deriveNodeRole({
+    id,
+    type: 'api',
+    position: { x: 0, y: 0 },
+    data: nodeData,
+  });
   
   // 检查是否已配置
   const hasConfig = nodeData?.requestConfig && (
@@ -117,6 +126,17 @@ export default function ApiNode({ data, selected, id }: NodeProps) {
             <Badge className={`${getMethodColor(method)} text-white text-xs px-2`}>
               {method}
             </Badge>
+            {/* 角色徽标：仅前置/清理显示，main 不显示（减少视觉噪音） */}
+            {role === 'precondition' && (
+              <Badge variant="outline" className="border-amber-400 text-amber-700 text-[10px] px-1.5 py-0">
+                前置
+              </Badge>
+            )}
+            {role === 'cleanup' && (
+              <Badge variant="outline" className="border-slate-400 text-slate-600 text-[10px] px-1.5 py-0">
+                清理
+              </Badge>
+            )}
             <div className="font-medium text-sm truncate flex-1" title={name}>
               {name}
             </div>

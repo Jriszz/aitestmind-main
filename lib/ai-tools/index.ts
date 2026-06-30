@@ -8,18 +8,23 @@ import { OrchestrationPlan } from '@/types/orchestration';
 import { assembleTestCases, type ApiMetadata } from './assembler';
 import { hierarchicalSearchApis, extractLayerKeywords } from './hierarchical-search';
 import { resolveEffectiveSemantics } from '../semantics-fingerprint';
+import { validateTestCase } from './validate-test-case';
 
 const prisma = new PrismaClient();
 
 // 导出层级检索函数
 export { hierarchicalSearchApis, extractLayerKeywords };
+export { validateTestCase };
 
 /**
  * 获取 API 详细信息
+ *
+ * 资产管理总线 Step 1：必须传入 workspaceId 收敛归属边界，
+ * 防止 AI 跨工作区拿到不属于当前上下文的接口（决策 10）。
  */
-export async function getApiDetail(apiId: string) {
-  const api = await prisma.api.findUnique({
-    where: { id: apiId },
+export async function getApiDetail(apiId: string, workspaceId: string) {
+  const api = await prisma.api.findFirst({
+    where: { id: apiId, workspaceId },
     include: {
       category: true,
       tags: {
@@ -31,7 +36,7 @@ export async function getApiDetail(apiId: string) {
   });
 
   if (!api) {
-    throw new Error('API 不存在');
+    throw new Error('API 不存在或不在当前工作区');
   }
 
   // 解析 JSON 字段
@@ -74,6 +79,65 @@ export async function getApiDetail(apiId: string) {
 }
 
 /**
+ * 查询接口的历史避坑反馈（AI 反馈闭环：反喂生成端）
+ *
+ * 设计要点：
+ *   - 仅返回 status=acknowledged 的反馈（人工评审通过的才生效，避免 AI 误判污染）
+ *   - 按 workspaceId 收敛（决策 10）
+ *   - 字段精简到 AI 必需的：category / summary / targetField / suggestion
+ *     不返回 detail / evidence（节省 token，AI 不需要原始证据）
+ *   - 每次命中 consumedCount++，度量"反馈是否真的在被采纳"
+ *
+ * 用法：在 get_api_detail 之后、设计断言/参数前调用，让 AI 翻看历史教训
+ */
+export async function queryApiFeedback(params: {
+  apiId: string;
+  workspaceId: string;
+  limit?: number;
+}) {
+  const { apiId, workspaceId, limit = 5 } = params;
+
+  const feedbacks = await (prisma as any).testCaseFeedback.findMany({
+    where: {
+      apiId,
+      workspaceId,
+      status: 'acknowledged', // 关键门控：只看评审通过的
+    },
+    orderBy: [
+      { consumedCount: 'desc' }, // 高频反馈优先（被反复救命的经验更可靠）
+      { updatedAt: 'desc' },     // 同等条件下用最新的
+    ],
+    take: limit,
+    select: {
+      id: true,
+      category: true,
+      summary: true,
+      targetField: true,
+      suggestion: true,
+    },
+  });
+
+  // 累加 consumedCount（度量反馈有没有真的进入 AI 决策）
+  if (feedbacks.length > 0) {
+    await (prisma as any).testCaseFeedback.updateMany({
+      where: { id: { in: feedbacks.map((f: any) => f.id) } },
+      data: { consumedCount: { increment: 1 } },
+    });
+  }
+
+  return {
+    apiId,
+    count: feedbacks.length,
+    feedbacks: feedbacks.map((f: any) => ({
+      category: f.category,
+      summary: f.summary,
+      targetField: f.targetField,
+      suggestion: f.suggestion,
+    })),
+  };
+}
+
+/**
  * 判断 API 是否会创建数据
  */
 function willCreateData(api: any): boolean {
@@ -112,24 +176,28 @@ function extractResourceType(api: any): string {
 
 /**
  * 智能搜索删除 API
+ *
+ * 资产管理总线 Step 1：workspaceId 必传，所有内部检索都按工作区收敛。
  */
 export async function smartSearchDeleteApi(params: {
   createApiId: string;
+  workspaceId: string;
 }) {
-  const createApi = await getApiDetail(params.createApiId);
-  
+  const createApi = await getApiDetail(params.createApiId, params.workspaceId);
+
   if (!willCreateData(createApi)) {
-    return { 
-      needCleanup: false, 
-      reason: '该 API 不会创建数据，无需清理' 
+    return {
+      needCleanup: false,
+      reason: '该 API 不会创建数据，无需清理'
     };
   }
 
   const resourceType = extractResourceType(createApi);
-  
+
   // 策略 1: 按分类 + 删除关键词
   let deleteApis = await prisma.api.findMany({
     where: {
+      workspaceId: params.workspaceId,
       category: createApi.category ? {
         name: { contains: resourceType }
       } : undefined,
@@ -151,6 +219,7 @@ export async function smartSearchDeleteApi(params: {
     const pathPrefix = createApi.path.replace(/\/create.*/, '');
     deleteApis = await prisma.api.findMany({
       where: {
+        workspaceId: params.workspaceId,
         method: 'DELETE',
         path: {
           contains: pathPrefix
@@ -194,8 +263,13 @@ export async function smartSearchDeleteApi(params: {
  * 创建测试用例
  * @param testCases 测试用例数据
  * @param userId 当前用户 ID，用于设置创建人/更新人（如 AI 生成时传入当前登录用户）
+ * @param workspaceId 当前工作区 ID（资产管理总线 Step 1：归属轴）。AI 生成的用例必须落到当前工作区。
  */
-export async function createTestCases(testCases: any[], userId?: string | null) {
+export async function createTestCases(
+  testCases: any[],
+  userId?: string | null,
+  workspaceId?: string | null
+) {
   const created = await Promise.all(
     testCases.map(async (testCase: any) => {
       // 确保 flowConfig 中的所有节点都有 data 字段
@@ -209,7 +283,7 @@ export async function createTestCases(testCases: any[], userId?: string | null) 
           return node;
         });
       }
-      
+
       // 1. 创建 TestCase
       const tc = await prisma.testCase.create({
         data: {
@@ -228,6 +302,8 @@ export async function createTestCases(testCases: any[], userId?: string | null) 
             ? { sourceFunctionalCaseId: testCase.sourceFunctionalCaseId }
             : {}),
           ...(userId && { createdBy: userId, updatedBy: userId }),
+          // 工作区归属（Step 1）
+          ...(workspaceId && { workspaceId }),
         },
       });
 
@@ -282,6 +358,8 @@ export async function assembleAndCreateTestCases(params: {
   onProgress?: ProgressCallback;
   /** 当前用户 ID，用于设置创建人/更新人（AI 生成时传入当前登录用户） */
   userId?: string | null;
+  /** 当前工作区 ID（资产管理总线 Step 1：归属轴）。AI 检索/落库都按此过滤 */
+  workspaceId: string;
   /** 用例名 → 来源语义指纹映射（AI 探索生成链路传入，用于标记派生来源；其他链路缺省） */
   fingerprintByName?: Record<string, string>;
   /** 用例名 → 服务端强制补充标签（如 AI探索 / 待编排 / 场景类型标签） */
@@ -289,7 +367,7 @@ export async function assembleAndCreateTestCases(params: {
   /** 用例名 → 来源接口功能用例 id（探索"功能用例→用例"链路传入，用于反向追溯；其他链路缺省） */
   functionalCaseIdByName?: Record<string, string>;
 }) {
-  const { orchestrationPlan, onProgress, userId, fingerprintByName, extraTagsByName, functionalCaseIdByName } = params;
+  const { orchestrationPlan, onProgress, userId, workspaceId, fingerprintByName, extraTagsByName, functionalCaseIdByName } = params;
 
   // 探索生成链路：按用例名匹配，注入来源指纹/功能用例 id 与工作流标签（服务端注入，AI 无需感知）
   if (fingerprintByName || extraTagsByName || functionalCaseIdByName) {
@@ -364,7 +442,7 @@ export async function assembleAndCreateTestCases(params: {
     const apiId = apiIdsArray[i];
     try {
       console.log(`  🔎 查询 API: ${apiId}...`);
-      const apiDetail = await getApiDetail(apiId);
+      const apiDetail = await getApiDetail(apiId, workspaceId);
       apiCache.set(apiId, apiDetail as ApiMetadata);
       console.log(`    ✅ 成功: ${apiDetail.name} (${apiDetail.method} ${apiDetail.path})`);
       querySuccess++;
@@ -433,7 +511,7 @@ export async function assembleAndCreateTestCases(params: {
     detail: `正在保存 ${assembledTestCases.length} 个测试用例...`
   });
   
-  const created = await createTestCases(assembledTestCases, userId);
+  const created = await createTestCases(assembledTestCases, userId, workspaceId);
   console.log(`✅ [AI Tools] 保存成功，已创建 ${created.length} 个测试用例`);
   
   created.forEach((tc, index) => {
@@ -523,6 +601,27 @@ export const AI_TOOLS = [
   {
     type: "function" as const,
     function: {
+      name: "query_api_feedback",
+      description: "查询某个接口在历史用例中暴露过的问题（仅返回人工评审通过的反馈，避免噪音）。推荐在 get_api_detail 之后、设计参数/断言前调用，可以避开已知坑。返回的 feedbacks 中：category=问题类型；summary=一句话教训；targetField=涉及的字段；suggestion=未来怎么写。把这些当成软约束影响断言/参数取舍。",
+      parameters: {
+        type: "object",
+        properties: {
+          apiId: {
+            type: "string",
+            description: "API 的唯一 ID"
+          },
+          limit: {
+            type: "number",
+            description: "返回反馈数量上限，默认 5"
+          }
+        },
+        required: ["apiId"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "smart_search_delete_api",
       description: "智能搜索对应的删除 API，用于后置清理。只在判断会创建数据时调用。",
       parameters: {
@@ -534,6 +633,30 @@ export const AI_TOOLS = [
           }
         },
         required: ["createApiId"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "validate_test_case",
+      description: "【提交前必调】对即将提交的 orchestrationPlan 做规则化自检（用例有效性 v1）。返回每个用例的 warnings 列表，常见 code：WEAK_ASSERTION_ONLY_STATUS（仅断言 HTTP 200）、QUERY_WITHOUT_PRECONDITION（查询用例无前置造数据但仓库有 create）、ASSERTION_ON_EMPTY_LIST（断言假设非空但无造数据）、MISSING_FILTER_VERIFICATION（过滤参数未被断言验证）、IDENTICAL_PARAM_VARIANTS（伪多样性：N 个用例只是某枚举字段不同且无造数据）、CLEANUP_MISSING（创建资源无清理）、INVALID_API_ID（apiId 不存在或越界）。规则纯静态分析、不修改 plan。处理 warnings 的方式：要么修复 plan 后再调一次，要么在响应文本里说明为什么本场景可接受该 warning。",
+      parameters: {
+        type: "object",
+        properties: {
+          orchestrationPlan: {
+            type: "object",
+            description: "与 assemble_and_create_test_cases 同构的编排指令。",
+            properties: {
+              testCases: {
+                type: "array",
+                items: { type: "object" },
+              },
+            },
+            required: ["testCases"],
+          },
+        },
+        required: ["orchestrationPlan"],
       },
     },
   },
@@ -642,6 +765,23 @@ export const AI_TOOLS = [
             },
             required: ["testCases"]
           }
+        },
+        required: ["orchestrationPlan"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "validate_test_case",
+      description: "【提交前必调】对 orchestrationPlan 做规则化自检，返回 warnings 列表（每条含 code/severity/message/nodeId）。在 assemble_and_create_test_cases 之前必须调用一次。规则集涵盖：只校验 status 的弱断言、查询用例无前置造数据、断言假设非空但无前置数据、传过滤参数但未校验、批次内伪多样性（仅枚举值不同）、create 无 cleanup。处理方式：要么修复 plan 后重新 validate，要么在回复里说明为什么接受该 warning（如（用例意图就是接口契约测试））。",
+      parameters: {
+        type: "object",
+        properties: {
+          orchestrationPlan: {
+            type: "object",
+            description: "即将提交给 assemble_and_create_test_cases 的编排指令，与该工具同构",
+          },
         },
         required: ["orchestrationPlan"],
       },

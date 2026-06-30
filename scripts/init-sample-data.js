@@ -13,6 +13,20 @@ async function initSampleData() {
     console.log('🚀 开始初始化示例测试数据...');
     console.log('');
 
+    // 0. 资产管理总线 Step 1：确保默认工作区存在，所有 seed 数据归属此工作区
+    const defaultWs = await prisma.workspace.upsert({
+      where: { slug: 'default' },
+      update: {},
+      create: {
+        name: '默认工作区',
+        slug: 'default',
+        description: '系统默认工作区',
+        isDefault: true,
+      },
+    });
+    const workspaceId = defaultWs.id;
+    console.log(`📦 默认工作区：${defaultWs.name} (${workspaceId})\n`);
+
     // 1. 检查是否已经有示例数据
     const existingApis = await prisma.api.count({
       where: {
@@ -93,6 +107,7 @@ async function initSampleData() {
           ]),
           responseStatus: 200,
           importSource: 'sample',
+          workspaceId,
         },
       });
       console.log(`   ✓ ${api1.name} (${api1.method} ${api1.path})`);
@@ -120,6 +135,7 @@ async function initSampleData() {
           }),
           responseStatus: 200,
           importSource: 'sample',
+          workspaceId,
         },
       });
       console.log(`   ✓ ${api2.name} (${api2.method} ${api2.path})`);
@@ -150,6 +166,7 @@ async function initSampleData() {
           ]),
           responseStatus: 200,
           importSource: 'sample',
+          workspaceId,
         },
       });
       console.log(`   ✓ ${api3.name} (${api3.method} ${api3.path})`);
@@ -177,6 +194,7 @@ async function initSampleData() {
           }),
           responseStatus: 200,
           importSource: 'sample',
+          workspaceId,
         },
       });
       console.log(`   ✓ ${api4.name} (${api4.method} ${api4.path})`);
@@ -370,6 +388,7 @@ async function initSampleData() {
           status: 'active',
           category: 'Sample',
           tags: JSON.stringify(['E2E', 'Demo', 'JSONPlaceholder']),
+          workspaceId,
         },
       });
     }

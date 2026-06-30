@@ -2,9 +2,11 @@
 断言引擎 - 负责执行测试断言
 """
 from typing import Any, Dict, List, Optional
+from decimal import Decimal, InvalidOperation
 from models import Assertion, AssertionOperator, ExpectedType
 from variable_manager import VariableManager
 import json
+import re
 
 
 class AssertionResult:
@@ -213,8 +215,48 @@ class AssertionEngine:
                     print(f"[断言引擎] 无法将 {expected} 解析为数组")
                     return expected
             return expected
-        
+
+        elif expected_type == ExpectedType.DECIMAL:
+            # 定点小数：保留为 Decimal 实例。Decimal(str(x)) 避开 float 二进制误差
+            if isinstance(expected, Decimal):
+                return expected
+            try:
+                return Decimal(str(expected))
+            except (InvalidOperation, ValueError, TypeError):
+                print(f"[断言引擎] 无法将 {expected} 解析为 Decimal，保持原值")
+                return expected
+
         return expected
+
+    def _coerce_expected_to_list(self, expected: Any) -> List[Any]:
+        """
+        把 expected 强制转换为 list：用于 in/notIn/eachEquals 等需要数组期望值的算子。
+        已经是 list 直接返回；字符串尝试 JSON 解析；其它包成单元素 list。
+        """
+        if isinstance(expected, list):
+            return expected
+        if isinstance(expected, str):
+            try:
+                parsed = json.loads(expected)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return [expected]
+
+    def _is_empty(self, value: Any) -> bool:
+        """判定 notEmpty 算子的"空"——None、空串、空数组、空对象都算空。"""
+        if value is None:
+            return True
+        if isinstance(value, (str, list, tuple, dict, set)) and len(value) == 0:
+            return True
+        return False
+
+    def _safe_len(self, value: Any) -> Optional[int]:
+        """对 list/str/dict/tuple 取 len()；不可取长度返回 None。"""
+        if isinstance(value, (list, str, dict, tuple, set)):
+            return len(value)
+        return None
     
     def execute_assertions(
         self, 
@@ -303,6 +345,29 @@ class AssertionEngine:
                 assertion.expectedType
             )
             print(f"[断言引擎] 类型转换后的期望值: {expected_value} (类型: {type(expected_value)})")
+
+            # 集合/遍历类算子需要 list 期望值——若用户未显式设 expectedType=array，
+            # 这里兜底把字符串形式的 "[0, 1001]" 解析为 list；标量包成单元素 list。
+            if assertion.operator in (
+                AssertionOperator.IN,
+                AssertionOperator.NOT_IN,
+                AssertionOperator.EACH_EQUALS,
+            ):
+                expected_value = self._coerce_expected_to_list(expected_value)
+                print(f"[断言引擎] 集合/遍历类算子，期望值强制 list: {expected_value}")
+
+            # actual 是 Decimal 字符串场景下，若 expectedType==DECIMAL，把 actual 也提升到 Decimal
+            # 仅对数值比较类算子做这层升级，避免影响 contains/exists 等
+            if assertion.expectedType == ExpectedType.DECIMAL and assertion.operator in (
+                AssertionOperator.EQUALS,
+                AssertionOperator.NOT_EQUALS,
+                AssertionOperator.GREATER_THAN,
+                AssertionOperator.LESS_THAN,
+            ):
+                try:
+                    actual_value = Decimal(str(actual_value)) if actual_value is not None else actual_value
+                except (InvalidOperation, ValueError, TypeError):
+                    print(f"[断言引擎] actual 无法升级为 Decimal，保持原值: {actual_value}")
             
             # 执行断言比较
             success, message = self._compare(
@@ -379,11 +444,18 @@ class AssertionEngine:
                 message = f"期望 {actual} 不包含 {expected}"
             
             elif operator == AssertionOperator.GREATER_THAN:
-                success = float(actual) > float(expected)
+                # Decimal 输入直接比；其它走 float（向后兼容）
+                if isinstance(actual, Decimal) or isinstance(expected, Decimal):
+                    success = Decimal(str(actual)) > Decimal(str(expected))
+                else:
+                    success = float(actual) > float(expected)
                 message = f"期望 {actual} > {expected}"
-            
+
             elif operator == AssertionOperator.LESS_THAN:
-                success = float(actual) < float(expected)
+                if isinstance(actual, Decimal) or isinstance(expected, Decimal):
+                    success = Decimal(str(actual)) < Decimal(str(expected))
+                else:
+                    success = float(actual) < float(expected)
                 message = f"期望 {actual} < {expected}"
             
             elif operator == AssertionOperator.EXISTS:
@@ -393,7 +465,116 @@ class AssertionEngine:
             elif operator == AssertionOperator.NOT_EXISTS:
                 success = actual is None
                 message = f"期望字段不存在，实际: {actual is None}"
-            
+
+            elif operator == AssertionOperator.NOT_EMPTY:
+                # 非空：拒绝 None、空串、空数组、空对象（柜台流水号场景必备）
+                success = not self._is_empty(actual)
+                message = f"期望字段非空，实际: {actual!r}"
+
+            elif operator == AssertionOperator.IN:
+                # 期望值是 list；actual 必须是其中之一（柜台业务码枚举场景）
+                if isinstance(expected, list):
+                    success = actual in expected
+                else:
+                    success = False
+                message = f"期望 {actual!r} 在集合 {expected!r} 中"
+
+            elif operator == AssertionOperator.NOT_IN:
+                if isinstance(expected, list):
+                    success = actual not in expected
+                else:
+                    success = True
+                message = f"期望 {actual!r} 不在集合 {expected!r} 中"
+
+            elif operator == AssertionOperator.LENGTH_EQUALS:
+                actual_len = self._safe_len(actual)
+                if actual_len is None:
+                    success = False
+                    message = f"实际值 {type(actual).__name__} 不支持取长度"
+                else:
+                    try:
+                        expected_len = int(expected)
+                        success = actual_len == expected_len
+                        message = f"期望长度 == {expected_len}，实际长度 {actual_len}"
+                    except (ValueError, TypeError):
+                        success = False
+                        message = f"长度期望值 {expected!r} 无法转换为整数"
+
+            elif operator == AssertionOperator.LENGTH_GREATER_THAN:
+                actual_len = self._safe_len(actual)
+                if actual_len is None:
+                    success = False
+                    message = f"实际值 {type(actual).__name__} 不支持取长度"
+                else:
+                    try:
+                        expected_len = int(expected)
+                        success = actual_len > expected_len
+                        message = f"期望长度 > {expected_len}，实际长度 {actual_len}"
+                    except (ValueError, TypeError):
+                        success = False
+                        message = f"长度期望值 {expected!r} 无法转换为整数"
+
+            elif operator == AssertionOperator.LENGTH_LESS_THAN:
+                actual_len = self._safe_len(actual)
+                if actual_len is None:
+                    success = False
+                    message = f"实际值 {type(actual).__name__} 不支持取长度"
+                else:
+                    try:
+                        expected_len = int(expected)
+                        success = actual_len < expected_len
+                        message = f"期望长度 < {expected_len}，实际长度 {actual_len}"
+                    except (ValueError, TypeError):
+                        success = False
+                        message = f"长度期望值 {expected!r} 无法转换为整数"
+
+            elif operator == AssertionOperator.EACH_EQUALS:
+                # actual 必须是 list；expected 已被前置强制为 list（语义：每一项 ∈ expected）
+                # 用例：查询账户 6217xxx 的明细 → 断言每条 accountNo ∈ ["6217xxx"]
+                if not isinstance(actual, list):
+                    success = False
+                    message = f"eachEquals 要求实际值为数组，实际类型: {type(actual).__name__}"
+                elif len(actual) == 0:
+                    # 空数组没有反例——按"无可证伪即通过"会让"造数据失败"漏过；故空数组判失败
+                    success = False
+                    message = "eachEquals 实际数组为空，无法验证每一项（请确认前置数据是否真的产生了记录）"
+                else:
+                    allowed = expected if isinstance(expected, list) else [expected]
+                    mismatched = [(i, v) for i, v in enumerate(actual) if v not in allowed]
+                    success = len(mismatched) == 0
+                    if success:
+                        message = f"数组 {len(actual)} 项全部 ∈ {allowed!r}"
+                    else:
+                        first_i, first_v = mismatched[0]
+                        message = (
+                            f"数组中有 {len(mismatched)}/{len(actual)} 项不在 {allowed!r} 内，"
+                            f"首个不符项 [{first_i}]={first_v!r}"
+                        )
+
+            elif operator == AssertionOperator.EACH_MATCHES:
+                # actual 是 list；expected 是正则字符串。每一项 str() 后匹配（柜台流水号格式批量校验）
+                if not isinstance(actual, list):
+                    success = False
+                    message = f"eachMatches 要求实际值为数组，实际类型: {type(actual).__name__}"
+                elif len(actual) == 0:
+                    success = False
+                    message = "eachMatches 实际数组为空，无法验证每一项"
+                else:
+                    try:
+                        pattern = re.compile(str(expected))
+                    except re.error as e:
+                        return False, f"eachMatches 正则编译失败: {e}"
+                    mismatched = [(i, v) for i, v in enumerate(actual) if not pattern.search(str(v))]
+                    success = len(mismatched) == 0
+                    if success:
+                        message = f"数组 {len(actual)} 项全部匹配正则 {expected!r}"
+                    else:
+                        first_i, first_v = mismatched[0]
+                        message = (
+                            f"数组中有 {len(mismatched)}/{len(actual)} 项不匹配 {expected!r}，"
+                            f"首个不符项 [{first_i}]={first_v!r}"
+                        )
+
             else:
                 success = False
                 message = f"未知的断言操作符: {operator}"

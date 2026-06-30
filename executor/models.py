@@ -31,7 +31,15 @@ class TestCaseStatus(str, Enum):
 
 
 class AssertionOperator(str, Enum):
-    """断言操作符"""
+    """断言操作符
+
+    分组：
+      - 等值/包含（原 8 个）：equals/notEquals/contains/notContains/greaterThan/lessThan/exists/notExists
+      - 非空：notEmpty（拒绝 None/空串/空数组/空对象；柜台流水号场景必备，不要再用 exists）
+      - 集合：in/notIn（柜台业务码枚举，expected 接数组）
+      - 长度：lengthEquals/lengthGreaterThan/lengthLessThan（分页/明细笔数）
+      - 遍历：eachEquals/eachMatches（actual 是 list 时每一项满足；过滤生效、明细归属一致性）
+    """
     EQUALS = "equals"
     NOT_EQUALS = "notEquals"
     CONTAINS = "contains"
@@ -40,6 +48,16 @@ class AssertionOperator(str, Enum):
     LESS_THAN = "lessThan"
     EXISTS = "exists"
     NOT_EXISTS = "notExists"
+    # P0
+    NOT_EMPTY = "notEmpty"
+    IN = "in"
+    NOT_IN = "notIn"
+    # P1
+    LENGTH_EQUALS = "lengthEquals"
+    LENGTH_GREATER_THAN = "lengthGreaterThan"
+    LENGTH_LESS_THAN = "lengthLessThan"
+    EACH_EQUALS = "eachEquals"
+    EACH_MATCHES = "eachMatches"
 
 
 class WaitType(str, Enum):
@@ -87,6 +105,7 @@ class ExpectedType(str, Enum):
     BOOLEAN = "boolean"
     OBJECT = "object"
     ARRAY = "array"
+    DECIMAL = "decimal"  # 定点小数（金额/利率/份额），走 decimal.Decimal 精确比较，避开 float 误差
     AUTO = "auto"  # 自动推断
 
 
@@ -95,7 +114,8 @@ class Assertion(BaseModel):
     id: Optional[str] = None
     field: str  # 字段路径
     operator: AssertionOperator
-    expected: Optional[Union[str, int, float, bool]] = None
+    # expected 支持：标量 + list（in/notIn/eachEquals 用数组期望值）
+    expected: Optional[Union[str, int, float, bool, list]] = None
     expectedType: ExpectedType = ExpectedType.AUTO  # 期望值类型，默认自动推断
 
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentWorkspace } from '@/lib/auth';
 import { parameterizePath } from '@/lib/path-parameterization';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +13,12 @@ export async function POST(request: NextRequest) {
   try {
     const currentUser = await getCurrentUser(request);
     const userId = currentUser?.user?.id ?? null;
+    // 资产管理总线 Step 1：归属当前工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const workspaceId = ws.workspaceId;
 
     const body = await request.json();
     const {
@@ -181,6 +187,7 @@ export async function POST(request: NextRequest) {
         responseHeaders: safeJsonStringify(responseHeaders),
         responseBody: safeJsonStringify(responseBody),
         responseMimeType: responseMimeType || null,
+        workspaceId,
         ...(userId && { createdBy: userId, updatedBy: userId }),
       },
     });

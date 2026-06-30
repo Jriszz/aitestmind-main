@@ -145,6 +145,14 @@ export function SwaggerImport({ isRecording }: SwaggerImportProps) {
         title: t('parseSuccess'),
         description: `${result.info.title} · ${t('parsedCount')} ${apis.length} ${t('apiRequests')}`,
       });
+
+      // 用 URL 拉取的：提示用户可以转为持久化数据源（资产管理总线 Step 2）
+      if (mode === 'url' && url.trim()) {
+        toast({
+          title: '需要后续重新同步？',
+          description: '前往「API 仓库 → Swagger 数据源」可保存 URL 并支持一键重新同步',
+        });
+      }
     } catch (error: any) {
       console.error('Swagger 解析失败:', error);
       toast({ variant: "destructive", title: t('parseFailed'), description: error.message });

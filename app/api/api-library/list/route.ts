@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { getCurrentWorkspace } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +10,12 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(request: NextRequest) {
   try {
+    // 资产管理总线 Step 1：先解析当前工作区，所有查询都按 workspaceId 过滤
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     const searchParams = request.nextUrl.searchParams;
     const page = parseInt(searchParams.get('page') || '1');
     const pageSize = parseInt(searchParams.get('pageSize') || '20');
@@ -17,7 +24,7 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search');
     const isStarred = searchParams.get('isStarred') === 'true';
     const includeArchived = searchParams.get('includeArchived') === 'true';
-    
+
     // 四层分类筛选
     const platform = searchParams.get('platform');
     const component = searchParams.get('component');
@@ -25,7 +32,8 @@ export async function GET(request: NextRequest) {
     const subFeature = searchParams.get('subFeature');
 
     // 构建查询条件
-    const where: any = {};
+    // 资产管理总线 Step 1：workspaceId 永远是第一道闸
+    const where: any = { workspaceId: ws.workspaceId };
     
     // 默认不显示归档的，除非明确要求包括归档的
     if (!includeArchived) {

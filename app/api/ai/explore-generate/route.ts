@@ -1,51 +1,55 @@
 import { NextRequest } from 'next/server';
 import { loadAIClient, type AIMessage } from '@/lib/ai-client';
-import { getSystemPrompt } from '@/lib/ai-prompts/system-prompt';
+import { getExploreGeneratePrompt } from '@/lib/ai-prompts/explore-generate-prompt';
 import {
   AI_TOOLS,
   getApiDetail,
   smartSearchDeleteApi,
   assembleAndCreateTestCases,
   hierarchicalSearchApis,
+  queryApiFeedback,
 } from '@/lib/ai-tools';
 import { prisma } from '@/lib/prisma';
 import { caseToData } from '@/lib/functional-case-utils';
+import { fingerprintFunctionalCase } from '@/lib/semantics-fingerprint';
+import { SCENARIO_TYPE_MAP } from '@/lib/constants/tags';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * AI 探索 · 生成阶段（SSE）
  * POST /api/ai/explore-generate
- *   body: { scenarios: Scenario[] }   —— 用户在场景清单里选定的场景
+ *   body 二选一：
+ *     { scenarios: Scenario[] }              —— 场景路径（接口已知，来自 explore-plan）
+ *     { functionalCases: FunctionalCase[] }  —— 功能用例路径（接口未知，来自文档/链路）
  *
- * 复用 smart-generate 的 Function Calling + assemble 引擎：
- *   - 把"选定场景清单"构造成定向指令（每个场景 → 一条同名用例）
- *   - 透传 fingerprintByName，让生成的用例落库时带上 sourceFingerprint（隐形去重/累积）
- *
- * 与 smart-generate 同引擎、不同入口提示词：这里 AI 不再自由发挥场景，
- * 而是忠实把"已审定的场景"组装成用例（设计阶段已在 explore-plan 完成）。
+ * 设计要点（与 smart-generate 同 Function Calling 引擎、不同入口提示词）：
+ *   - 用 explore-generate-prompt.ts 的"组装器型" system prompt 替代 UNIFIED_SYSTEM_PROMPT
+ *     的"设计师型"——避免 AI 自由发挥改 title / 合并条目，破坏 title→指纹追溯映射。
+ *   - 透传 fingerprintByName / functionalCaseIdByName，让生成的用例落库时带追溯字段。
+ *   - 服务端按"用例名集合 == 输入 title 集合"做等值校验，缺失/多余各推 warning SSE。
+ *   - 功能用例落库 status 不预先打 generated，避免下游失败留下孤儿态；仅在 TestCase
+ *     真正落库后回填阶段才推到 generated（呼应 DESIGN_DECISIONS 决策 10 状态机一致性）。
  */
 
 type StreamMessage = { type: string; content: string; data?: any };
 
 /**
  * 决策可见化（Level 1）：把 Agent 内部的关键决策点显式推给前端，让用户实时看见
- * "AI 搜了什么 / 选了哪个接口 / 有没有配 cleanup / 最终打算装成什么"。
- *
- * 设计要点：
- * - 与现有 tool_call 消息并存（tool_call 服务于进度条；decision 服务于复盘视图）。
- * - search/select/cleanup 阶段 caseTitle 未知（AI 还没决定装成哪条用例），先标 null；
- *   到 assemble 时按 plan 里的 testCases[].name 拆成多条 decision，前端再聚合。
- * - assemble 在调用 assembleAndCreateTestCases 之前推 —— 即使后端组装失败，用户也能
- *   看见 AI 当时编排意图，便于排错。
+ * "AI 搜了什么 / 选了哪个接口 / 有没有配 cleanup / 最终打算装成什么 / 失败时编排了啥"。
  */
-type DecisionKind = 'search_api' | 'select_api' | 'cleanup_search' | 'assemble';
+type DecisionKind =
+  | 'search_api'
+  | 'select_api'
+  | 'cleanup_search'
+  | 'assemble'
+  | 'assemble_failed';
 
 function pushDecision(
   controller: ReadableStreamDefaultController,
   args: {
     kind: DecisionKind;
-    title: string; // 一句话给人看的标题
+    title: string;
     chunkIdx: number;
     caseTitle?: string | null;
     detail: any;
@@ -59,19 +63,18 @@ function pushDecision(
   });
 }
 
-const SCENARIO_TYPE_TAG: Record<string, string> = {
-  normal: '正常场景',
-  param: '参数校验',
-  business: '业务语义',
-  e2e: 'E2E流程',
-  permission: '权限校验',
-  state: '状态流转',
-};
-
+/**
+ * 构造场景标签（决策 11：单层池，可空）
+ * - 场景标签：从 SCENARIO_TYPE_MAP 选
+ * - 业务域标签：根据 sourceField 选
+ * - 来源（"AI探索"）不进 tag——归 AssetLineage 管（决策 10）
+ * - 状态（"待编排"）不进 tag——归 lifecycle 管
+ */
 function buildScenarioTags(scenario: any): string[] {
-  const tags = ['AI探索', '待编排'];
-  const typeTag = SCENARIO_TYPE_TAG[scenario?.type];
-  if (typeTag) tags.push(typeTag);
+  const tags: string[] = [];
+
+  const scenarioTag = SCENARIO_TYPE_MAP[scenario?.type];
+  if (scenarioTag) tags.push(scenarioTag);
 
   if (scenario?.sourceField === 'fundConsistency') tags.push('资金对账');
   if (scenario?.sourceField === 'sideEffect' || scenario?.sourceField === 'dbAsserts') {
@@ -93,11 +96,19 @@ export async function POST(request: NextRequest) {
         const scenarios = body?.scenarios;
         const functionalCases = body?.functionalCases;
 
-        const { getCurrentUser } = await import('@/lib/auth');
+        const { getCurrentUser, getCurrentWorkspace } = await import('@/lib/auth');
         const currentUser = await getCurrentUser(request);
         const currentUserId = currentUser?.user?.id ?? null;
+        // 资产管理总线 Step 1：解析当前工作区，AI 探索/落库都按此过滤
+        const ws = await getCurrentWorkspace(request);
+        if (!ws) {
+          sendSSE(controller, { type: 'error', content: '未登录或无可用工作区' });
+          controller.close();
+          return;
+        }
+        const workspaceId: string = ws.workspaceId;
 
-        // 两种入参二选一：场景清单（按 API 范围探索）或功能用例（从需求文档）
+        // 两种入参二选一
         const fromFunctional = Array.isArray(functionalCases) && functionalCases.length > 0;
         const items: any[] = fromFunctional ? functionalCases : scenarios;
 
@@ -107,50 +118,89 @@ export async function POST(request: NextRequest) {
           return;
         }
 
-        // 用例名 → 来源指纹 / 工作流标签（服务端注入，AI 无需感知）
+        // 用例名 → 指纹 / 工作流标签（服务端注入，AI 无需感知）
         const fingerprintByName: Record<string, string> = {};
         const extraTagsByName: Record<string, string[]> = {};
         for (const s of items) {
           if (!s.title) continue;
-          if (!fromFunctional && s.fingerprint) fingerprintByName[s.title] = s.fingerprint;
           extraTagsByName[s.title] = buildScenarioTags(s);
+          if (!fromFunctional) {
+            // 场景路径：指纹由 explore-plan 服务端计算并透传（接口语义指纹族）
+            if (s.fingerprint) fingerprintByName[s.title] = s.fingerprint;
+          } else {
+            // 功能用例路径：当前函数计算稳定指纹（功能用例指纹族），与场景路径共享
+            // fingerprintByName 通道注入到 TestCase.sourceFingerprint，让 explore-plan
+            // 的隐形去重在两条链路上对齐。
+            fingerprintByName[s.title] = fingerprintFunctionalCase({
+              // 资产管理总线 Step 1 兼容：指纹仍传 null，避免回填后旧用例 sourceFingerprint
+              // 失配导致"已生成"误判（破坏功能用例去重链路的连续性）；
+              // 工作区收敛通过 explore-plan 查询的 where 实现，而非指纹本身。
+              workspaceId: null,
+              module: s.module ?? null,
+              feature: s.feature ?? null,
+              title: s.title,
+              apiHints: Array.isArray(s.apiHints) ? s.apiHints : [],
+            });
+          }
         }
 
-        // 方案 A：功能用例链路"先落库再生成"。
-        // 探索生成 = 人工评审后沉淀为正式用例：选中即落库（没 id 建、有 id 标记），
-        // 再让 TestCase 落库时带上 sourceFunctionalCaseId（反向追溯），生成后回填 generatedCaseIds（正向）。
-        const functionalCaseIdByName: Record<string, string> = {}; // 用例名 → 功能用例 id
+        // 功能用例链路"先落库后追溯"：仅建立 title → fc.id 映射，**不预先打 generated**。
+        // 状态推迟到全部批次跑完、且该 title 确有 TestCase 产出时再更新（见末尾回填段）。
+        // 旧设计在此处提前写 generated，失败时留下 status=generated && generatedCaseIds=[]
+        // 的孤儿态污染前端列表，故撤销。
+        const functionalCaseIdByName: Record<string, string> = {};
         if (fromFunctional) {
           for (const fc of items) {
             if (!fc.title) continue;
+            const fp = fingerprintByName[fc.title];
             try {
               if (fc.id) {
-                // 已有 → 确保存在并标记 generated（内容以库为准，不覆盖）
-                await (prisma as any).interfaceFunctionalCase.update({
-                  where: { id: fc.id },
-                  data: { status: 'generated', ...(currentUserId && { updatedBy: currentUserId }) },
+                // 已有 id：复用并补指纹（如果原记录还没存）
+                // 工作区收敛：避免别工作区同 id 数据被错误命中
+                const row = await (prisma as any).interfaceFunctionalCase.findFirst({
+                  where: { id: fc.id, workspaceId },
+                  select: { sourceFingerprint: true },
                 });
+                if (row && !row.sourceFingerprint && fp) {
+                  await (prisma as any).interfaceFunctionalCase.update({
+                    where: { id: fc.id },
+                    data: { sourceFingerprint: fp },
+                  });
+                }
                 functionalCaseIdByName[fc.title] = fc.id;
               } else {
-                // 内存草稿 → 去重落库：同 (module, title) 已存在则复用并标记 generated，否则建档。
-                // 防止"先保存到库再探索生成"或重复点击在用例层产生重复用例。
-                const moduleVal = fc.module || null;
-                const titleVal = fc.title || '未命名用例';
-                const existing = await (prisma as any).interfaceFunctionalCase.findFirst({
-                  where: { module: moduleVal, title: titleVal },
-                  select: { id: true },
-                });
-                if (existing) {
-                  await (prisma as any).interfaceFunctionalCase.update({
-                    where: { id: existing.id },
-                    data: { status: 'generated', ...(currentUserId && { updatedBy: currentUserId }) },
+                // 无 id：先按 sourceFingerprint 去重，再回退到 (module, title) 软键
+                // 工作区收敛：不同工作区相同模块+标题应视为不同功能用例
+                let existing:
+                  | { id: string; sourceFingerprint: string | null }
+                  | null = null;
+                if (fp) {
+                  existing = await (prisma as any).interfaceFunctionalCase.findFirst({
+                    where: { sourceFingerprint: fp, workspaceId },
+                    select: { id: true, sourceFingerprint: true },
                   });
+                }
+                if (!existing) {
+                  existing = await (prisma as any).interfaceFunctionalCase.findFirst({
+                    where: { module: fc.module || null, title: fc.title, workspaceId },
+                    select: { id: true, sourceFingerprint: true },
+                  });
+                  // 命中软键但无指纹的旧数据，回填指纹
+                  if (existing && fp && !existing.sourceFingerprint) {
+                    await (prisma as any).interfaceFunctionalCase.update({
+                      where: { id: existing.id },
+                      data: { sourceFingerprint: fp },
+                    });
+                  }
+                }
+                if (existing) {
                   functionalCaseIdByName[fc.title] = existing.id;
                 } else {
                   const row = await (prisma as any).interfaceFunctionalCase.create({
                     data: {
-                      ...caseToData({ ...fc, status: 'generated' }),
+                      ...caseToData({ ...fc, sourceFingerprint: fp }),
                       ...(currentUserId && { createdBy: currentUserId, updatedBy: currentUserId }),
+                      workspaceId,
                     },
                   });
                   functionalCaseIdByName[fc.title] = row.id;
@@ -163,10 +213,14 @@ export async function POST(request: NextRequest) {
         }
 
         const client = await loadAIClient();
-        const systemPrompt = getSystemPrompt('api');
+        const systemPrompt = getExploreGeneratePrompt(
+          fromFunctional ? 'functional-case' : 'scenario'
+        );
 
         // 全部已创建用例（跨批累计）
         const createdTestCases: any[] = [];
+        // 失败批次清单（partial recovery：单批失败不影响其他批）
+        const failedChunks: Array<{ chunkIdx: number; error: string; titles: string[] }> = [];
 
         // 跑单批：一个独立的 Function Calling 循环
         const runChunk = async (
@@ -182,22 +236,15 @@ export async function POST(request: NextRequest) {
               : `正在按选定场景组装测试用例${prefix}...`,
           });
 
+          // 进入本批前快照已创建数量，结束后切片得到 thisChunkCreated
+          const createdSnapshot = createdTestCases.length;
+
+          // user message 只承载清单数据 + 一句"按 system 规则处理"。
+          // 角色定位、preconditions 分类、UI 措辞过滤等规则全部下沉到 system prompt，
+          // 让 prompt cache 在多批之间命中。
           const directive = fromFunctional
-            ? // 从需求文档来的功能用例：AI 需先检索接口，再把业务步骤映射成可执行用例
-              '以下是已审定的接口功能测试用例（业务语言描述，未绑定具体接口）。请为每条生成一条可执行测试用例：\n' +
-              '- 用例名称必须与功能用例 title 完全一致（用于来源追溯）。\n' +
-              '- 先用 hierarchical_search_apis 按 apiHints / 步骤动作检索 API 仓库，找到每步对应的真实接口；找不到的步骤可跳过并在用例描述中说明。\n' +
-              '- 用 get_api_detail 获取接口参数/响应结构，把 steps 的 action/input/expected 映射成接口节点与断言。\n' +
-              '- preconditions 处理规则（重要）：\n' +
-              '  · 认证类前置（如"用户已登录""持有 token""已认证"）→ **不生成节点**。平台已通过认证 Token 配置全局注入 Authorization，所有请求自动带认证头。\n' +
-              '  · 数据类前置（如"超管租户已存在""账户有 USD 余额""产品已上架"）→ **生成前置节点**：用 hierarchical_search_apis 搜对应"创建/查询/置态"接口；搜到则生成节点（id 用 step_pre_<n>，如 step_pre_1），放在主业务节点之前；搜不到则在用例 description 标注"前置 X 需人工准备"，不臆造接口。\n' +
-              '  · 环境类前置（如"系统时间为工作日""配置项 X 已开启"）→ 不生成节点，记入 description 让人审核。\n' +
-              '  · 前置节点产生的关键标识（新建实体的 id/编码等）必须用 variableRefs 在主节点中引用（例如 body.tenantId ← step_pre_1.response.data.id），不要硬编码刚刚创建的值。\n' +
-              '  · "造数式前置"（POST/PUT 创建实体）必须配套 cleanup 节点删除/复原（用 smart_search_delete_api 找删除接口，节点 isCleanup: true）；只读式前置（GET 查询）无需 cleanup。\n' +
-              '- 把 postconditions 映射成"后置查询 + 断言"节点；把 cleanup 映射成后置清理节点（会造数/改状态的用例用 smart_search_delete_api 找删除接口）。\n' +
-              '- 不要写 SQL；dbAsserts/落库类校验请转化为通过查询接口可验证的接口层断言。\n' +
-              '- 若用例残留前端措辞（点击/页面显示/提示文案/列表展示/页面跳转），按接口契约视角处理：断言只断接口响应能验证的字段/状态，纯 UI 动作（跳转/刷新/置灰/Toast）不生成节点，直接忽略。\n' +
-              '- 最后调用 assemble_and_create_test_cases 一次性创建。\n\n' +
+            ? '以下是已审定的接口功能测试用例清单。请严格按 system 中的"组装器"规则处理本批，' +
+              '为每条产出一条且仅一条可执行测试用例（用例 name 必须与 title 完全一致），最后一次性调用 assemble_and_create_test_cases。\n\n' +
               '功能用例清单：\n' +
               JSON.stringify(
                 chunkItems.map((c: any) => ({
@@ -215,12 +262,8 @@ export async function POST(request: NextRequest) {
                 null,
                 2
               )
-            : // 按 API 范围探索来的场景：接口已知，直接组装
-              '以下是已经审定的测试场景清单。请严格按此清单生成测试用例：\n' +
-              '- 每个场景生成且仅生成一条测试用例，用例名称必须与场景 title 完全一致（用于来源追溯）。\n' +
-              '- 用 get_api_detail 获取涉及接口的参数/响应结构，按场景 steps 与 rationale 组装。\n' +
-              '- 会创建数据的正常场景用 smart_search_delete_api 加后置清理。\n' +
-              '- 最后调用 assemble_and_create_test_cases 一次性创建。\n\n' +
+            : '以下是已审定的测试场景清单。请严格按 system 中的"组装器"规则处理本批，' +
+              '为每条产出一条且仅一条可执行测试用例（用例 name 必须与 title 完全一致），最后一次性调用 assemble_and_create_test_cases。\n\n' +
               '场景清单：\n' +
               JSON.stringify(
                 chunkItems.map((s: any) => ({
@@ -274,12 +317,17 @@ export async function POST(request: NextRequest) {
                   const functionArgs = JSON.parse(toolCall.function.arguments);
 
                   if (functionName === 'hierarchical_search_apis') {
-                    functionResult = await hierarchicalSearchApis(functionArgs);
-                    // 推 search_api 决策：搜索关键词 + 命中数 + 前 5 候选
-                    // 命中 0 是 Agent 3 最常出错的地方（AI 会跳过该步骤或臆造接口），前端高亮提示
+                    functionResult = await hierarchicalSearchApis({ ...functionArgs, workspaceId });
                     const hits = Array.isArray(functionResult) ? functionResult : [];
                     const keywords: Record<string, any> = {};
-                    for (const k of ['platform', 'component', 'feature', 'apiName', 'method', 'userQuery'] as const) {
+                    for (const k of [
+                      'platform',
+                      'component',
+                      'feature',
+                      'apiName',
+                      'method',
+                      'userQuery',
+                    ] as const) {
                       if (functionArgs?.[k]) keywords[k] = functionArgs[k];
                     }
                     const kwSummary =
@@ -307,8 +355,7 @@ export async function POST(request: NextRequest) {
                       },
                     });
                   } else if (functionName === 'get_api_detail') {
-                    functionResult = await getApiDetail(functionArgs.apiId);
-                    // 推 select_api 决策：AI 选定了哪个 API，是否有结构化约束/语义可用
+                    functionResult = await getApiDetail(functionArgs.apiId, workspaceId);
                     const hasConstraints = !!(functionResult as any)?.paramConstraints;
                     const hasSemantics = !!(functionResult as any)?.businessSemantics;
                     pushDecision(controller, {
@@ -324,9 +371,25 @@ export async function POST(request: NextRequest) {
                         hasSemantics,
                       },
                     });
+                  } else if (functionName === 'query_api_feedback') {
+                    functionResult = await queryApiFeedback({ ...functionArgs, workspaceId });
+                    sendSSE(controller, {
+                      type: 'tool_call',
+                      content: 'success',
+                      data: {
+                        tool: functionName,
+                        args: functionArgs,
+                        result: functionResult,
+                        duration: Date.now() - startTime,
+                        status: 'success',
+                        summary: functionResult.count > 0
+                          ? `命中 ${functionResult.count} 条避坑反馈`
+                          : `无历史反馈`,
+                      },
+                    });
+
                   } else if (functionName === 'smart_search_delete_api') {
-                    functionResult = await smartSearchDeleteApi(functionArgs);
-                    // 推 cleanup_search 决策：是否找到清理接口
+                    functionResult = await smartSearchDeleteApi({ ...functionArgs, workspaceId });
                     pushDecision(controller, {
                       kind: 'cleanup_search',
                       chunkIdx,
@@ -341,8 +404,6 @@ export async function POST(request: NextRequest) {
                       },
                     });
                   } else if (functionName === 'assemble_and_create_test_cases') {
-                    // 推 assemble 决策：在落库前先把每条用例的编排概览推给前端
-                    // 这样即便组装失败，用户也能看到 AI 当时打算装什么
                     const plan = functionArgs?.orchestrationPlan;
                     const testCases = Array.isArray(plan?.testCases) ? plan.testCases : [];
                     for (const tc of testCases) {
@@ -351,11 +412,11 @@ export async function POST(request: NextRequest) {
                         .filter((n: any) => n?.type === 'api')
                         .map((n: any) => n?.apiId)
                         .filter(Boolean);
-                      const hasPreNodes = nodes.some((n: any) =>
-                        typeof n?.id === 'string' && n.id.startsWith('step_pre_')
+                      const hasPreNodes = nodes.some(
+                        (n: any) =>
+                          typeof n?.id === 'string' && n.id.startsWith('step_pre_')
                       );
                       const hasCleanup = nodes.some((n: any) => n?.isCleanup === true);
-                      // assertionCounts: 节点 id → 该节点断言条数（让用户能一眼看出有没有断言遗漏）
                       const assertionCounts: Record<string, number> = {};
                       for (const n of nodes) {
                         if (n?.type === 'api' && typeof n.id === 'string') {
@@ -381,42 +442,60 @@ export async function POST(request: NextRequest) {
                         },
                       });
                     }
-                    functionResult = await assembleAndCreateTestCases({
-                      ...functionArgs,
-                      userId: currentUserId,
-                      fingerprintByName, // 注入来源指纹
-                      extraTagsByName, // 注入 AI探索 / 待编排 / 类型标签
-                      functionalCaseIdByName, // 注入来源功能用例 id（反向追溯）
-                      onProgress: (progress) => {
-                        sendSSE(controller, {
-                          type: 'tool_call',
-                          content: 'progress',
-                          data: {
-                            tool: functionName,
-                            progress: {
-                              step: progress.step,
-                              totalSteps: progress.totalSteps,
-                              percentage: Math.round((progress.step / progress.totalSteps) * 100),
-                              message: `${prefix}${progress.message}`,
-                              detail: progress.detail,
+                    try {
+                      functionResult = await assembleAndCreateTestCases({
+                        ...functionArgs,
+                        userId: currentUserId,
+                        workspaceId,
+                        fingerprintByName,
+                        extraTagsByName,
+                        functionalCaseIdByName,
+                        onProgress: (progress) => {
+                          sendSSE(controller, {
+                            type: 'tool_call',
+                            content: 'progress',
+                            data: {
+                              tool: functionName,
+                              progress: {
+                                step: progress.step,
+                                totalSteps: progress.totalSteps,
+                                percentage: Math.round(
+                                  (progress.step / progress.totalSteps) * 100
+                                ),
+                                message: `${prefix}${progress.message}`,
+                                detail: progress.detail,
+                              },
+                              status: 'running',
                             },
-                            status: 'running',
-                          },
-                        });
-                      },
-                    });
-                    createdTestCases.push(...functionResult.created);
-                    sendSSE(controller, {
-                      type: 'tool_call',
-                      content: 'success',
-                      data: {
-                        tool: functionName,
-                        result: functionResult,
-                        duration: Date.now() - startTime,
-                        status: 'success',
-                        summary: functionResult.message,
-                      },
-                    });
+                          });
+                        },
+                      });
+                      createdTestCases.push(...functionResult.created);
+                      sendSSE(controller, {
+                        type: 'tool_call',
+                        content: 'success',
+                        data: {
+                          tool: functionName,
+                          result: functionResult,
+                          duration: Date.now() - startTime,
+                          status: 'success',
+                          summary: functionResult.message,
+                        },
+                      });
+                    } catch (assembleErr: any) {
+                      // 落库失败：决策流补一条 assemble_failed，把"AI 当时想装什么"和
+                      // "为什么没成"在前端能对齐展示，而不只是一条孤零零的 tool_call:error。
+                      pushDecision(controller, {
+                        kind: 'assemble_failed',
+                        chunkIdx,
+                        title: `❌ 编排落库失败：${assembleErr?.message ?? '未知错误'}`,
+                        detail: {
+                          error: assembleErr?.message ?? String(assembleErr),
+                          plannedCaseNames: testCases.map((tc: any) => tc?.name).filter(Boolean),
+                        },
+                      });
+                      throw assembleErr; // 让外层 try/catch 拿到，沉到 functionResult 给 LLM 看
+                    }
                   } else {
                     functionResult = { error: '未知的工具' };
                   }
@@ -442,22 +521,71 @@ export async function POST(request: NextRequest) {
               continueLoop = false;
             }
           }
+
+          // 迭代上限触发但本批没产生任何用例 → 沉默关闭会让前端看不到原因，主动报警告
+          const thisChunkCreated = createdTestCases.slice(createdSnapshot);
+          if (iterationCount >= maxIterations && thisChunkCreated.length === 0) {
+            sendSSE(controller, {
+              type: 'warning',
+              content: `${prefix}达到 ${maxIterations} 轮迭代上限但未完成组装`,
+              data: { chunkIdx, reason: 'max_iterations' },
+            });
+          }
+
+          // 服务端集合等值校验：用例名集合 == 输入 title 集合
+          // 任一侧多/少都推 warning。缺失的 title 在回填段不会被打 status: generated。
+          const expectedTitles = new Set(
+            chunkItems.map((x: any) => x.title).filter(Boolean) as string[]
+          );
+          const actualTitles = new Set(thisChunkCreated.map((c: any) => c.name));
+          const missing = [...expectedTitles].filter((t) => !actualTitles.has(t));
+          const extra = [...actualTitles].filter((t) => !expectedTitles.has(t));
+          if (missing.length > 0) {
+            sendSSE(controller, {
+              type: 'warning',
+              content: `${prefix}输入 ${expectedTitles.size} 条，实际生成 ${actualTitles.size} 条，缺失 ${missing.length} 条`,
+              data: { chunkIdx, reason: 'missing', missing },
+            });
+          }
+          if (extra.length > 0) {
+            sendSSE(controller, {
+              type: 'warning',
+              content: `${prefix}AI 多生成了 ${extra.length} 条非清单内用例`,
+              data: { chunkIdx, reason: 'extra', extra },
+            });
+          }
         };
 
-        // 多时分批生成（每批 ≤CHUNK 个），避免一次喂太多 token 截断；进度连续
-        // 功能用例每条要先检索接口、上下文更重，批量做小一点
+        // 多时分批生成（每批 ≤CHUNK 个），避免一次喂太多 token 截断
         const CHUNK = fromFunctional ? 4 : 8;
         const chunks: any[][] = [];
         for (let i = 0; i < items.length; i += CHUNK) {
           chunks.push(items.slice(i, i + CHUNK));
         }
+        // partial recovery：单批失败不影响后续批；汇总到 failedChunks 传给前端
         for (let i = 0; i < chunks.length; i++) {
-          await runChunk(chunks[i], i, chunks.length);
+          try {
+            await runChunk(chunks[i], i, chunks.length);
+          } catch (e: any) {
+            const msg = e?.message ?? String(e);
+            failedChunks.push({
+              chunkIdx: i,
+              error: msg,
+              titles: chunks[i].map((x: any) => x.title).filter(Boolean),
+            });
+            sendSSE(controller, {
+              type: 'warning',
+              content: `第 ${i + 1}/${chunks.length} 批失败：${msg}`,
+              data: { chunkIdx: i, reason: 'chunk_error' },
+            });
+            console.error(`[explore-generate] chunk ${i} failed:`, e);
+          }
         }
 
-        // 功能用例链路：回填正向追溯（功能用例.generatedCaseIds += 派生出的 TestCase id），并标记 generated
+        // 功能用例链路：回填正向追溯，仅对"该 title 在 createdTestCases 中确实出现"的 fc
+        // 推进 status=generated；其余保留原状态（draft/reviewed/...）。
+        // 这是孤儿态修复的核心：失败/缺失的功能用例永远走不到这里。
         if (fromFunctional && createdTestCases.length > 0) {
-          // 按用例名聚合本次新建的 TestCase id
           const idsByTitle = new Map<string, string[]>();
           for (const tc of createdTestCases) {
             const arr = idsByTitle.get(tc.name) ?? [];
@@ -466,7 +594,7 @@ export async function POST(request: NextRequest) {
           }
           for (const [title, fcId] of Object.entries(functionalCaseIdByName)) {
             const newIds = idsByTitle.get(title);
-            if (!newIds || newIds.length === 0) continue;
+            if (!newIds || newIds.length === 0) continue; // 关键守卫：没产出就不动状态
             try {
               const existing = await (prisma as any).interfaceFunctionalCase.findUnique({
                 where: { id: fcId },
@@ -481,7 +609,11 @@ export async function POST(request: NextRequest) {
               const merged = Array.from(new Set([...prev, ...newIds]));
               await (prisma as any).interfaceFunctionalCase.update({
                 where: { id: fcId },
-                data: { generatedCaseIds: JSON.stringify(merged), status: 'generated' },
+                data: {
+                  generatedCaseIds: JSON.stringify(merged),
+                  status: 'generated',
+                  ...(currentUserId && { updatedBy: currentUserId }),
+                },
               });
             } catch (e) {
               console.error('回填 generatedCaseIds 失败:', e);
@@ -496,6 +628,7 @@ export async function POST(request: NextRequest) {
           data: {
             testCasesCreated: createdTestCases.length,
             testCases: createdTestCases.map((tc) => ({ id: tc.id, name: tc.name })),
+            failedChunks,
           },
         });
         controller.close();

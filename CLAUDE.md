@@ -37,6 +37,8 @@ AI 驱动的接口测试平台：用户用自然语言描述需求 → AI 通过
 5. **x-db-asserts 的 SQL 当前不执行**，只作 AI 理解素材；不要在 flowConfig 生成 SQL 断言节点。（决策 6）
 6. **AI 能力作为"工具 + prompt 指导"扩展**，不要让 AI 直接产出底层 flowConfig/SQL。（决策 7）
 7. **资产管理走"四轴总线"**：Workspace（归属/AI 上下文边界）+ AssetLineage（血缘）+ AssetLifecycle（统一四态 draft/active/deprecated/archived）+ AssetEvent（事件流）。各资产保留强类型表，**绝不做 EAV 通用资产表**；`deprecated` 态不进 AI 上下文；AI 工具默认按 workspace 过滤；事件流不得触发 businessSemantics 自动合并（与决策 5 协同）。（决策 10）
+8. **AI 反馈闭环走独立资产**：执行失败 + 用户编辑 + 主动吐槽 → `TestCaseFeedback` 表（**不写回 `Api.businessSemantics`**）；`category` 必须从固定枚举选（服务端校验）；`query_api_feedback` 工具**只返回 `acknowledged`** 状态的反馈给 AI；`user_edit` 反馈静默采集不打扰用户。（决策 12）
+9. **断言算子按语义维度扩展，不按业务领域扩展**：加 `notEmpty`/`in`/`length_*`/`each_*` 这种通用语义算子；绝不加 `amountEquals`/`tradeStatusValid` 这种业务领域算子。**`exists` 永远保持"非 None 即通过"，绝不改语义**——"非空"必须由 `notEmpty` 显式表达。**金额/利率/份额一律 `expectedType: "decimal"`**（走 Python Decimal 精确比较），柜台资金断言 validate 会强制校验。（决策 13）
 
 ## 关键文件地图
 
@@ -52,7 +54,9 @@ AI 驱动的接口测试平台：用户用自然语言描述需求 → AI 通过
 | AI 工具 / getApiDetail | `lib/ai-tools/index.ts` |
 | AI system prompt | `lib/ai-prompts/system-prompt.ts` |
 | 编排组装引擎 | `lib/ai-tools/assembler.ts` |
-| 执行器（断言引擎） | `executor/assertion_engine.py` |
+| 执行器（断言引擎） | `executor/assertion_engine.py`（16 算子 + Decimal，见决策 13）|
+| 断言算子前端 UI | `components/test-orchestration/AssertionConfig.tsx` + `i18n/messages/{zh,en}.json` `assertionConfig` 节 |
+| 用例自检（含柜台规则） | `lib/ai-tools/validate-test-case.ts`（10 条规则，见决策 13）|
 | 资产总线（四轴：Workspace/Lineage/Lifecycle/Event） | `lib/asset-bus/`（实施时新建）、`prisma/schema.prisma` 中 `Workspace` / `AssetLineage` / `AssetEvent` / `SwaggerSource` |
 
 ## 开发约定

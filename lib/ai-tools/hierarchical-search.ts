@@ -8,6 +8,22 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 /**
+ * 同业务实体下其他 CRUD 动作的轻量摘要
+ *
+ * 设计目的（用例有效性 v1）：
+ * AI 看到 query 接口时，能立刻意识到"旁边还有 create/update/delete"，
+ * 从而有机会把"空查询用例"升级为"造数据→查询"E2E flow。
+ *
+ * 推断是软启发（按 method + name 关键词），错判一两个不影响。
+ */
+export interface SiblingCrudHint {
+  id: string;
+  name: string;
+  method: string;
+  action: 'create' | 'update' | 'delete' | 'query' | 'other';
+}
+
+/**
  * 检索结果接口
  */
 interface SearchResult {
@@ -19,6 +35,137 @@ interface SearchResult {
   platform: string | null;
   component: string | null;
   feature: string | null;
+  /**
+   * 同业务实体下的其他 CRUD 动作（按 feature 聚合，回退到 component）。
+   * 由 attachSiblingCrud() 在返回前填充；永远是数组（可能为空），让 AI 看清楚"真的没有同类接口"。
+   * 仅返回轻量字段（id/name/method/action），不返回详情，控制 token。
+   */
+  siblingCrud?: SiblingCrudHint[];
+}
+
+/**
+ * 根据 method + name 推断 API 的 CRUD 动作
+ * 与 lib/ai-tools/index.ts 的 willCreateData 风格一致，但覆盖全部 4 类 + 其他
+ */
+function inferCrudAction(api: { name: string | null; method: string; path: string | null }): SiblingCrudHint['action'] {
+  const name = api.name || '';
+  const path = api.path || '';
+  const method = (api.method || '').toUpperCase();
+
+  const hasAny = (keywords: string[]) =>
+    keywords.some(k => name.toLowerCase().includes(k.toLowerCase()) || path.toLowerCase().includes(k.toLowerCase()));
+
+  // delete 优先（DELETE method 信号最强）
+  if (method === 'DELETE' || hasAny(['删除', '移除', 'delete', 'remove'])) {
+    return 'delete';
+  }
+
+  // create
+  if ((method === 'POST' || method === 'PUT') && hasAny(['创建', '新增', '添加', '注册', '保存', 'create', 'add', 'register', 'save'])) {
+    return 'create';
+  }
+
+  // update
+  if ((method === 'PUT' || method === 'PATCH' || method === 'POST') && hasAny(['修改', '更新', '编辑', 'update', 'edit', 'modify', 'patch'])) {
+    return 'update';
+  }
+
+  // query
+  if (method === 'GET' || hasAny(['查询', '获取', '列表', '详情', 'query', 'list', 'get', 'detail'])) {
+    return 'query';
+  }
+
+  return 'other';
+}
+
+/**
+ * 给 topN 结果批量补 siblingCrud 字段
+ *
+ * 策略：
+ * 1. 按 (platform, component, feature) 三元组聚合，同 feature 优先
+ * 2. 同 feature 没东西就回退到同 component
+ * 3. 单条 siblingCrud 上限 10 条
+ * 4. 不包含自己（排除当前 api.id）
+ */
+async function attachSiblingCrud(
+  apis: SearchResult[],
+  workspaceId: string
+): Promise<void> {
+  if (apis.length === 0) return;
+
+  type GroupKey = { platform: string | null; component: string | null; feature: string | null };
+  type Sibling = { id: string; name: string; method: string; path: string | null };
+  type Group = { sameFeature: Sibling[]; sameComponent: Sibling[] };
+
+  // 用 JSON.stringify 做 Map key，避免分隔符冲突
+  const keyStr = (g: GroupKey) =>
+    JSON.stringify([g.platform ?? null, g.component ?? null, g.feature ?? null]);
+
+  // 收集所有需要查询的 (platform, component, feature) 三元组（去重）
+  const uniqueKeys = new Map<string, GroupKey>();
+  for (const api of apis) {
+    const gk: GroupKey = { platform: api.platform, component: api.component, feature: api.feature };
+    uniqueKeys.set(keyStr(gk), gk);
+  }
+
+  // 一次性查出所有相关 feature / component 下的接口（按 workspace 收敛，决策 10）
+  const groupEntries = await Promise.all(
+    Array.from(uniqueKeys.entries()).map(async ([k, gk]) => {
+      const sameFeature: Sibling[] = gk.feature
+        ? await prisma.api.findMany({
+            where: {
+              workspaceId,
+              platform: gk.platform,
+              component: gk.component,
+              feature: gk.feature,
+            },
+            select: { id: true, name: true, method: true, path: true },
+            take: 30,
+          })
+        : [];
+
+      // 同 feature 太少（<2 条意味着只有自己），回退到同 component
+      let sameComponent: Sibling[] = [];
+      if (sameFeature.length < 2 && gk.component) {
+        sameComponent = await prisma.api.findMany({
+          where: {
+            workspaceId,
+            platform: gk.platform,
+            component: gk.component,
+          },
+          select: { id: true, name: true, method: true, path: true },
+          take: 30,
+        });
+      }
+
+      return [k, { sameFeature, sameComponent }] as [string, Group];
+    })
+  );
+
+  const byKey = new Map<string, Group>(groupEntries);
+
+  // 给每个 api 挂载 siblingCrud
+  for (const api of apis) {
+    const k = keyStr({ platform: api.platform, component: api.component, feature: api.feature });
+    const group = byKey.get(k);
+    if (!group) {
+      api.siblingCrud = [];
+      continue;
+    }
+
+    // 优先用 feature 集，太空就用 component 集
+    const pool = group.sameFeature.length >= 2 ? group.sameFeature : group.sameComponent;
+
+    api.siblingCrud = pool
+      .filter(p => p.id !== api.id)
+      .slice(0, 10)
+      .map(p => ({
+        id: p.id,
+        name: p.name,
+        method: p.method,
+        action: inferCrudAction(p),
+      }));
+  }
 }
 
 /**
@@ -27,16 +174,20 @@ interface SearchResult {
 interface HierarchicalSearchParams {
   // 用户原始描述
   userQuery?: string;
-  
+
   // 分层关键词（AI提取）
   platform?: string;
   component?: string;
   feature?: string;
   apiName?: string;
-  
+
   // 辅助过滤
   method?: string; // HTTP方法
   limit?: number; // 返回结果数量限制
+
+  // 资产管理总线 Step 1：工作区归属边界
+  // 强制收敛检索范围到当前工作区。调用方必须从 getCurrentWorkspace(request) 解析后传入。
+  workspaceId: string;
 }
 
 /**
@@ -121,7 +272,8 @@ export async function hierarchicalSearchApis(
     const fetchLimit = Math.max(resultLimit * 3, 50);
 
     // 构建查询条件
-    const where: any = {};
+    // 资产管理总线 Step 1：先按 workspaceId 收敛，再叠加层级条件
+    const where: any = { workspaceId: params.workspaceId };
 
     // ========== 阶段1: 层级化精确查询 ==========
 
@@ -180,8 +332,9 @@ export async function hierarchicalSearchApis(
     }
 
     // 执行数据库查询（拉取更多候选以便评分排序）
+    // where 永远包含 workspaceId，即便其他条件为空也不会越界
     const apis = await prisma.api.findMany({
-      where: Object.keys(where).length > 0 ? where : undefined,
+      where,
       select: {
         id: true,
         name: true,
@@ -196,7 +349,12 @@ export async function hierarchicalSearchApis(
     });
 
     // 按层级匹配度评分排序，确保最相关的 API 排在前面
-    return scoreAndSort(apis as SearchResult[], params, resultLimit);
+    const topResults = scoreAndSort(apis as SearchResult[], params, resultLimit);
+
+    // 补充同业务实体下的 CRUD 全景（用例有效性提升 v1）
+    await attachSiblingCrud(topResults, params.workspaceId);
+
+    return topResults;
   } catch (error) {
     console.error('[hierarchicalSearchApis] 检索失败:', error);
     

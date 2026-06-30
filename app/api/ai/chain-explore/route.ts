@@ -7,6 +7,7 @@ import {
 } from '@/lib/ai-prompts/chain-explore-prompt';
 import { parseLooseJsonObject } from '@/lib/json-utils';
 import { rowToCase, normalizeFunctionalCase } from '@/lib/functional-case-utils';
+import { getCurrentWorkspace } from '@/lib/auth';
 import type { FunctionalCase } from '@/types/functional-case';
 
 export const dynamic = 'force-dynamic';
@@ -28,6 +29,13 @@ interface ChainNodeInput {
  */
 export async function POST(request: NextRequest) {
   try {
+    // 资产管理总线 Step 1：解析当前工作区，链路检索仅在当前工作区内
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const workspaceId = ws.workspaceId;
+
     const { flowName, nodes } = await request.json();
 
     if (typeof flowName !== 'string' || !flowName.trim()) {
@@ -61,8 +69,8 @@ export async function POST(request: NextRequest) {
           return { order: idx + 1, name: node.name, capability: null };
         }
         try {
-          const row = await (prisma as any).interfaceFunctionalCase.findUnique({
-            where: { id: node.functionalCaseId },
+          const row = await (prisma as any).interfaceFunctionalCase.findFirst({
+            where: { id: node.functionalCaseId, workspaceId },
           });
           if (!row) {
             unmatchedNodes.push(node.name);

@@ -1,14 +1,21 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentWorkspace } from '@/lib/auth';
 import { logger, OperationType } from '@/lib/logger';
 import { getExecutorUrl } from '@/lib/config';
+import { normalizeAndValidateTags } from '@/lib/tag-validator';
 
 // GET /api/test-suites - 获取测试套件列表
 export async function GET(request: Request) {
   const startTime = Date.now();
-  
+
   try {
+    // 资产管理总线 Step 1
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     const category = searchParams.get('category');
@@ -17,7 +24,7 @@ export async function GET(request: Request) {
 
     logger.apiRequest('GET', '/api/test-suites', OperationType.READ, { status, category, page, pageSize });
 
-    const where: any = {};
+    const where: any = { workspaceId: ws.workspaceId };
     if (status) where.status = status;
     if (category) where.category = category;
 
@@ -124,6 +131,11 @@ export async function POST(request: Request) {
   try {
     const currentUser = await getCurrentUser(request);
     const userId = currentUser?.user?.id ?? null;
+    // 资产管理总线 Step 1：套件归属当前工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
 
     const body = await request.json();
     const {
@@ -150,6 +162,16 @@ export async function POST(request: Request) {
 
     // 使用事务确保创建套件和关联用例的原子性
     logger.db(OperationType.CREATE, 'TestSuite', 'transaction', { name, executionMode, testCasesCount: testCases.length });
+
+    // 标签枚举校验（决策 11）
+    const tagResult = normalizeAndValidateTags(tags, status);
+    if (tagResult.error) {
+      return NextResponse.json(
+        { success: false, error: `标签校验失败: ${tagResult.error}` },
+        { status: 400 }
+      );
+    }
+
     const createdSuite = await prisma.$transaction(async (tx) => {
       const testSuite = await tx.testSuite.create({
         data: {
@@ -157,13 +179,14 @@ export async function POST(request: Request) {
           description,
           status,
           category,
-          tags: tags ? JSON.stringify(tags) : null,
+          tags: tagResult.tags.length > 0 ? JSON.stringify(tagResult.tags) : null,
           useGlobalSettings,
           environmentConfig: environmentConfig || null,
           runMode,
           executionMode,
           scheduleConfig: scheduleConfig ? JSON.stringify(scheduleConfig) : null,
           scheduleStatus: executionMode === 'scheduled' ? (scheduleStatus || 'active') : null,
+          workspaceId: ws.workspaceId,
           ...(userId && { createdBy: userId, updatedBy: userId }),
         },
       });

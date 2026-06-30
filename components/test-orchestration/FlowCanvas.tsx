@@ -42,6 +42,7 @@ interface FlowCanvasProps {
   onEdgesChange?: (edges: Edge[]) => void;
   onNodeDrop?: (nodeType: string, position: { x: number; y: number }, targetNodeId?: string) => void;
   onNodeDelete?: (nodeId: string) => void;  // 节点删除回调
+  onNodesPaste?: (nodes: Node[]) => void;   // 节点粘贴回调：父组件负责把新节点追加进 state
   selectedNodeId?: string | null;
 }
 
@@ -55,6 +56,7 @@ export default function FlowCanvas({
   onEdgesChange,
   onNodeDrop,
   onNodeDelete,
+  onNodesPaste,
   selectedNodeId,
 }: FlowCanvasProps) {
   const [nodes, setNodes, handleNodesChange] = useNodesState(initialNodes as Node[]);
@@ -102,6 +104,90 @@ export default function FlowCanvas({
       document.removeEventListener('node-delete', handleNodeDeleteEvent);
     };
   }, [onNodeDelete]);
+
+  // 节点剪贴板 + 复制/粘贴快捷键
+  // 设计要点：
+  //  1. 仅复制节点本身，不复制边——多选时边的歧义大，单节点复制时也无意义
+  //  2. start/end 节点不复制（唯一节点）
+  //  3. 粘贴时清空 execution 字段（避免新节点显示旧执行结果）
+  //  4. 粘贴位置偏移 (+40, +40)，避免完全重叠
+  //  5. 输入框/textarea/contenteditable 内的 Ctrl+C/V 不拦截（不破坏配置抽屉里的文本编辑）
+  const clipboardRef = useRef<Node[]>([]);
+  useEffect(() => {
+    const handleCopyPaste = (e: KeyboardEvent) => {
+      // 仅响应 Ctrl/Cmd 组合键
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key !== 'c' && key !== 'v') return;
+
+      // 输入框中不拦截，避免破坏文本复制粘贴
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+
+      if (key === 'c') {
+        // 复制选中节点（排除 start/end）
+        const selected = nodes.filter(
+          (n) => n.selected && n.type !== 'start' && n.type !== 'end',
+        );
+        if (selected.length === 0) return;
+        // 深拷贝避免后续编辑互相影响
+        clipboardRef.current = selected.map((n) => JSON.parse(JSON.stringify(n)));
+        e.preventDefault();
+        // 通过自定义事件通知父层弹 toast（保持 FlowCanvas 不依赖 toast）
+        document.dispatchEvent(
+          new CustomEvent('nodes-copied', { detail: { count: selected.length } }),
+        );
+      } else if (key === 'v') {
+        const buffer = clipboardRef.current;
+        if (!buffer || buffer.length === 0) {
+          document.dispatchEvent(new CustomEvent('nodes-paste-empty'));
+          return;
+        }
+        e.preventDefault();
+        const ts = Date.now();
+        const newNodes: Node[] = buffer.map((n, idx) => {
+          // 深拷贝 + 清理 execution + 重写 id
+          const cloned = JSON.parse(JSON.stringify(n)) as Node;
+          const newId = `${cloned.type}_${ts}_${idx}`;
+          const data: any = cloned.data || {};
+          if ('execution' in data) delete data.execution;
+          // parallel 节点的子 api 也要换内部 id，避免与原节点的子项冲突
+          if (cloned.type === 'parallel' && Array.isArray(data.apis)) {
+            data.apis = data.apis.map((api: any, j: number) => ({
+              ...api,
+              id: `api_${ts}_${idx}_${j}`,
+            }));
+          }
+          return {
+            ...cloned,
+            id: newId,
+            position: {
+              x: (cloned.position?.x ?? 0) + 40,
+              y: (cloned.position?.y ?? 0) + 40,
+            },
+            data,
+            selected: true,
+          };
+        });
+        onNodesPaste?.(newNodes);
+      }
+    };
+
+    window.addEventListener('keydown', handleCopyPaste);
+    return () => {
+      window.removeEventListener('keydown', handleCopyPaste);
+    };
+  }, [nodes, onNodesPaste]);
 
   // 同步外部nodes更新（但避免回流导致的重复同步）
   useEffect(() => {

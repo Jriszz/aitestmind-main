@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentWorkspace } from '@/lib/auth';
 import { logger, OperationType } from '@/lib/logger';
 import { getExecutorUrl } from '@/lib/config';
+import { normalizeAndValidateTags } from '@/lib/tag-validator';
 
 // GET /api/test-suites/[id] - 获取测试套件详情
 export async function GET(
@@ -14,10 +15,15 @@ export async function GET(
   
   try {
     logger.apiRequest('GET', `/api/test-suites/${id}`, OperationType.READ, { id });
-    logger.db(OperationType.READ, 'TestSuite', 'findUnique', { id });
-    
-    const testSuite = await prisma.testSuite.findUnique({
-      where: { id },
+    // 资产管理总线 Step 1：跨工作区直接 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    logger.db(OperationType.READ, 'TestSuite', 'findFirst', { id, workspaceId: ws.workspaceId });
+
+    const testSuite = await prisma.testSuite.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
       include: {
         testCases: {
           include: {
@@ -106,8 +112,22 @@ export async function PUT(
   const { id } = await params;
   
   try {
+    // 资产管理总线 Step 1：跨工作区直接 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existing = await prisma.testSuite.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Test suite not found' }, { status: 404 });
+    }
+
     const body = await request.json();
-    
+    delete body.workspaceId; // 禁止跨工作区移动
+
     logger.apiRequest('PUT', `/api/test-suites/${id}`, OperationType.UPDATE, {
       name: body.name,
       status: body.status,
@@ -131,13 +151,22 @@ export async function PUT(
     const currentUser = await getCurrentUser(request);
     const userId = currentUser?.user?.id ?? null;
 
+    // 标签枚举校验（决策 11）
+    const tagResult = normalizeAndValidateTags(tags, status);
+    if (tagResult.error) {
+      return NextResponse.json(
+        { success: false, error: `标签校验失败: ${tagResult.error}` },
+        { status: 400 }
+      );
+    }
+
     // 更新测试套件基本信息
     const updateData: any = {
       name,
       description,
       status,
       category,
-      tags: tags ? JSON.stringify(tags) : null,
+      tags: tagResult.tags.length > 0 ? JSON.stringify(tagResult.tags) : null,
       useGlobalSettings,
       environmentConfig: environmentConfig || null,
       ...(userId && { updatedBy: userId }),
@@ -265,8 +294,20 @@ export async function DELETE(
   
   try {
     logger.apiRequest('DELETE', `/api/test-suites/${id}`, OperationType.DELETE, { id });
+    // 资产管理总线 Step 1：跨工作区直接 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existing = await prisma.testSuite.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Test suite not found' }, { status: 404 });
+    }
     logger.db(OperationType.DELETE, 'TestSuite', 'delete', { id });
-    
+
     await prisma.testSuite.delete({
       where: { id },
     });

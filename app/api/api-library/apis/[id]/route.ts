@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { parameterizePath } from '@/lib/path-parameterization';
 import { logger, OperationType } from '@/lib/logger';
+import { getCurrentWorkspace } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,6 +42,16 @@ export async function GET(
 
     if (!api) {
       logger.warn(OperationType.READ, `API不存在: ${id} - 404 (${Date.now() - startTime}ms)`);
+      return NextResponse.json(
+        { success: false, error: 'API不存在' },
+        { status: 404 }
+      );
+    }
+
+    // 资产管理总线 Step 1：跨工作区访问直接 404（不暴露存在性）
+    const ws = await getCurrentWorkspace(request);
+    if (!ws || (api.workspaceId && api.workspaceId !== ws.workspaceId)) {
+      logger.warn(OperationType.READ, `API跨工作区访问: ${id} - 404`);
       return NextResponse.json(
         { success: false, error: 'API不存在' },
         { status: 404 }
@@ -100,8 +111,22 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
+    // 资产管理总线 Step 1：跨工作区访问拒绝
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existingApi = await prisma.api.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existingApi) {
+      return NextResponse.json({ success: false, error: 'API不存在' }, { status: 404 });
+    }
+
     const body = await request.json();
-    
+    // 剥离客户端传入的 workspaceId，禁止跨工作区移动资产
+    delete body.workspaceId;
     const {
       name,
       description,
@@ -365,7 +390,20 @@ export async function DELETE(
     const { id } = await params;
     const { searchParams } = new URL(request.url);
     const force = searchParams.get('force') === 'true';
-    
+
+    // 资产管理总线 Step 1：跨工作区访问拒绝
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existingApi = await prisma.api.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existingApi) {
+      return NextResponse.json({ success: false, error: 'API不存在' }, { status: 404 });
+    }
+
     // 检查是否有测试用例引用了这个API
     const referencingSteps = await prisma.testStep.findMany({
       where: { apiId: id },

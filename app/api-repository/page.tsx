@@ -29,6 +29,7 @@ import {
   Square
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FourLayerTree } from '@/components/api-repository/FourLayerTree';
 import { ApiDetailDialog } from '@/components/api-repository/ApiDetailDialog';
 import { ApiEditDialog } from '@/components/api-repository/ApiEditDialog';
@@ -36,6 +37,7 @@ import { ApiCreateDialog } from '@/components/api-repository/ApiCreateDialog';
 import { CreateClassificationDialog } from '@/components/api-repository/CreateClassificationDialog';
 import { EditClassificationDialog } from '@/components/api-repository/EditClassificationDialog';
 import { ApiDeleteConfirmDialog } from '@/components/api-repository/ApiDeleteConfirmDialog';
+import { SwaggerSourcesPanel } from '@/components/api-repository/SwaggerSourcesPanel';
 import { useToast } from '@/hooks/use-toast';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -493,6 +495,15 @@ export default function ApiRepositoryPage() {
 
       {/* 右侧内容区 */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <Tabs defaultValue="apis" className="flex-1 flex flex-col min-h-0">
+          <div className="px-4 pt-3 border-b border-[#e5e7eb] dark:border-[#4b5563] bg-background">
+            <TabsList>
+              <TabsTrigger value="apis">接口列表</TabsTrigger>
+              <TabsTrigger value="swagger-sources">Swagger 数据源</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="apis" className="flex-1 flex flex-col min-h-0 mt-0 overflow-hidden">
         {/* 顶部工具栏：单行布局，左侧统计+搜索，右侧操作按钮分组 */}
         <div className="p-4 border-b border-[#e5e7eb] dark:border-[#4b5563] bg-background">
           <div className="flex flex-wrap items-center gap-3">
@@ -785,6 +796,12 @@ export default function ApiRepositoryPage() {
             </div>
           </div>
         )}
+          </TabsContent>
+
+          <TabsContent value="swagger-sources" className="flex-1 overflow-auto p-4 mt-0">
+            <SwaggerSourcesPanel onApisChanged={refreshAll} />
+          </TabsContent>
+        </Tabs>
       </div>
 
       {/* 对话框 */}

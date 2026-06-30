@@ -8,10 +8,11 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, CheckCircle2, XCircle, Clock, Loader2, Eye, StopCircle, RotateCcw, FileText, Search, Filter } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, XCircle, Clock, Loader2, Eye, StopCircle, RotateCcw, FileText, Search, Filter, Sparkles } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslations } from 'next-intl';
 import CaseExecutionDialog from '@/components/reports/CaseExecutionDialog';
+import FailureDiagnoseDialog from '@/components/feedback/FailureDiagnoseDialog';
 
 interface ExecutionData {
   id: string;
@@ -76,6 +77,9 @@ export default function SuiteExecutionPage() {
   const [isStoppingOrRetrying, setIsStoppingOrRetrying] = useState(false);
   const [caseNameFilter, setCaseNameFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+
+  // AI 归因弹窗
+  const [diagnoseTarget, setDiagnoseTarget] = useState<{ caseExecutionId: string; caseName: string } | null>(null);
 
   useEffect(() => {
     // 首屏使用轻量 summary，避免 full 详情（stepExecutions + 大量 JSON 解析）导致加载过慢
@@ -507,6 +511,23 @@ export default function SuiteExecutionPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     {getStatusBadge(caseExec.status)}
+                    {caseExec.status === 'failed' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDiagnoseTarget({
+                            caseExecutionId: caseExec.id,
+                            caseName: caseExec.testCaseName,
+                          });
+                        }}
+                        title="让 AI 分析为什么失败，结论需要确认后才会反喂生成端"
+                      >
+                        <Sparkles className="h-4 w-4 mr-1 text-orange-500" />
+                        AI 归因
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -585,6 +606,18 @@ export default function SuiteExecutionPage() {
         onOpenChange={setShowCaseDialog}
         caseExecution={selectedCase}
       />
+
+      {/* AI 失败归因对话框 */}
+      {diagnoseTarget && (
+        <FailureDiagnoseDialog
+          open={!!diagnoseTarget}
+          onOpenChange={(open) => {
+            if (!open) setDiagnoseTarget(null);
+          }}
+          caseExecutionId={diagnoseTarget.caseExecutionId}
+          caseName={diagnoseTarget.caseName}
+        />
+      )}
     </div>
   );
 }

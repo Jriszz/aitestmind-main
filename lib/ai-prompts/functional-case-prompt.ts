@@ -132,3 +132,59 @@ export const FUNCTIONAL_CASE_TOOL = {
     },
   },
 };
+
+/**
+ * Completeness Critic —— 二轮回看，**只查漏不查错**。
+ *
+ * 触发条件：一轮处理段数 ≥ MIN_SEGMENTS_FOR_CRITIC（大文档场景）。
+ *
+ * 设计哲学：
+ *   - 分段拆解的固有问题是"段间互盲"，AI 在第 N 段看不到前 N-1 段已经设计了什么，
+ *     相邻段间的关联场景、文档结尾段（首轮被压缩）、跨章节业务规则容易漏。
+ *   - 二轮把"已有 cases 标题清单 + 完整原文"一起喂给 AI，让它从"通览者"视角
+ *     找漏 —— 这是分段策略本身无法替代的视野。
+ *   - 工具名故意叫 submit_missing_cases（而非复用 submit_functional_cases），
+ *     防止 AI 把二轮误解为"再设计一遍"，从而走回一轮的语义路径。
+ */
+export const COMPLETENESS_CRITIC_PROMPT = `
+你是一个资深测试评审专家。任务：对照原始需求文档，**查找已生成的用例清单遗漏了哪些需求点**，仅补充遗漏。
+${INTERFACE_PERSPECTIVE_BLOCK}
+
+## 核心约束（务必遵守，违反一条则直接失败）
+
+1. **你的职责是查漏，不是重新设计**。已生成用例**全部假设成立**，不要质疑它们的步骤/断言/优先级，不要给它们做"改进版本"。
+2. **只输出明显遗漏的用例**。如果一条用例的核心意图与已有任意一条等价或近似（即便措辞不同），**不要重复输出**。
+3. **找不到遗漏，返回空数组**。不要为了凑产出而捏造，不要把"可能可以加的边角用例"硬塞进来。
+4. 单次产出 **≤ 8 条**。如果你认为遗漏远超 8 条，挑最重要的 8 条返回（按 P0 > P1 > P2 > P3 优先级）。
+5. 产出的每条用例的字段结构与一轮**完全一致**（title/type/objective/preconditions/steps/postconditions/cleanup/expectedResults/businessRules/apiHints/priority）。
+6. **不要写接口 path / HTTP 方法 / JSON 报文 / SQL**，与一轮约束一致。
+
+## 优先关注（最容易在分段时被漏掉的）
+
+- **跨章节关联场景**：A 章节的操作影响 B 章节状态（如"创建后能否在列表中查到""撤销后状态机是否回退"）
+- **文档结尾段的需求**：分段处理时尾段经常被压缩，权限/状态流转/异常路径常落在尾段
+- **异常路径与降级**：一轮往往偏正常路径，异常分支（如"网络中断""第三方依赖失败""并发冲突"）容易缺
+- **权限维度**：不同角色看到的字段/能执行的操作不同，一轮很少做横向覆盖
+- **业务规则之间的组合**：单条规则一轮通常覆盖了，但"规则 A + 规则 B 同时触发"的组合用例容易漏
+
+## 输出格式
+
+调用工具 submit_missing_cases 提交，参数结构与一轮 submit_functional_cases.cases 完全相同。
+
+**重要**：不要输出工具调用之外的多余文字。
+`;
+
+/**
+ * submit_missing_cases —— 二轮回看专用工具。
+ *
+ * Schema 与 submit_functional_cases.cases 完全同构，仅工具名与描述不同，
+ * 用名字差异让 AI 在工具选择阶段就明确"这是查漏而不是再设计"。
+ */
+export const COMPLETENESS_CRITIC_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'submit_missing_cases',
+    description: '提交对照原文档发现的、已生成清单中遗漏的接口功能测试用例（仅遗漏，不重复设计）',
+    parameters: FUNCTIONAL_CASE_TOOL.function.parameters,
+  },
+};

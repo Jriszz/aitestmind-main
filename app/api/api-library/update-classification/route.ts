@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { getCurrentWorkspace } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,10 +10,16 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(request: NextRequest) {
   try {
+    // 资产管理总线 Step 1：分类更新仅作用于当前工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     const body = await request.json();
     const { oldPath, newName, level } = body;
 
-    // 兼容第四层“子功能”类型：在后端统一按 feature 字段处理
+    // 兼容第四层"子功能"类型：在后端统一按 feature 字段处理
     const normalizedLevel = level === 'subFeature' ? 'feature' : level;
 
     if (!oldPath || !newName || !normalizedLevel) {
@@ -24,6 +31,7 @@ export async function POST(request: NextRequest) {
 
     // 构建更新条件
     const where: any = {
+      workspaceId: ws.workspaceId,
       isArchived: false,
     };
 

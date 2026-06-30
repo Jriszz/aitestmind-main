@@ -56,14 +56,15 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    // 检查是否有关联的API
+    // 分类是全局的，但删除时只能在没有任何工作区还在引用它时才安全
+    // 此处用全局 count，避免在 ws-A 看到为空就把 ws-B 还在用的分类删了
     const apiCount = await prisma.api.count({
       where: { categoryId: id },
     });
 
     if (apiCount > 0) {
       return NextResponse.json(
-        { success: false, error: `该分类下还有 ${apiCount} 个API，无法删除` },
+        { success: false, error: `该分类下还有 ${apiCount} 个API（含其他工作区），无法删除` },
         { status: 400 }
       );
     }

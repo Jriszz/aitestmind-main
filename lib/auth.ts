@@ -99,19 +99,55 @@ export async function cleanExpiredSessions() {
 // 获取当前用户（从请求中）
 export async function getCurrentUser(request: Request) {
   const token = request.headers.get('Authorization')?.replace('Bearer ', '');
-  
+
   if (!token) {
     // 尝试从 cookie 中获取
     const cookies = request.headers.get('cookie');
     const cookieToken = cookies?.split(';').find(c => c.trim().startsWith('session='))?.split('=')[1];
-    
+
     if (!cookieToken) {
       return null;
     }
-    
+
     return validateSession(cookieToken);
   }
-  
+
   return validateSession(token);
+}
+
+// 获取当前工作区（资产管理总线 Step 1：归属轴）
+// 返回 { workspaceId } | null
+// - 未登录或无可用工作区时返回 null（调用方应返回 401）
+// - 已登录用户优先用 User.currentWorkspaceId
+// - 老 token / 未初始化用户兜底到 isDefault=true 的工作区，并回写 currentWorkspaceId
+// - 详见 docs/DESIGN_DECISIONS.md 决策 10
+export async function getCurrentWorkspace(
+  request: Request
+): Promise<{ workspaceId: string } | null> {
+  const session = await getCurrentUser(request);
+  if (!session) return null;
+
+  // 1. 用户已设的当前工作区
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { currentWorkspaceId: true },
+  });
+  if (user?.currentWorkspaceId) {
+    return { workspaceId: user.currentWorkspaceId };
+  }
+
+  // 2. fallback：默认工作区，并回写到用户记录，避免每次重查
+  const def = await prisma.workspace.findFirst({
+    where: { isDefault: true },
+    select: { id: true },
+  });
+  if (!def) return null;
+
+  await prisma.user.update({
+    where: { id: session.user.id },
+    data: { currentWorkspaceId: def.id },
+  });
+
+  return { workspaceId: def.id };
 }
 

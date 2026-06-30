@@ -77,6 +77,10 @@ model Api {
   createdByUser User? @relation("ApiCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByUser User? @relation("ApiUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
 
+  // 归属轴（资产管理总线 Step 1：Workspace）
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
   @@index([categoryId])
   @@index([createdBy])
   @@index([updatedBy])
@@ -88,6 +92,7 @@ model Api {
   @@index([feature])
   @@index([subFeature])
   @@index([importSource])
+  @@index([workspaceId])
 }
 
 // 分类模型（旧的，保留向后兼容）
@@ -203,7 +208,11 @@ model TestCase {
   updatedBy String?
   createdByUser User? @relation("TestCaseCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByUser User? @relation("TestCaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  
+
+  // 归属轴（资产管理总线 Step 1：Workspace）
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
   @@index([status])
   @@index([priority])
   @@index([category])
@@ -212,6 +221,7 @@ model TestCase {
   @@index([updatedBy])
   @@index([sourceFingerprint])
   @@index([sourceFunctionalCaseId])
+  @@index([workspaceId])
 }
 
 // 接口功能用例模型 —— "需求/功能规格 → 人理解的接口功能测试用例"（测试设计层，不可执行）
@@ -243,16 +253,27 @@ model InterfaceFunctionalCase {
   // 生成追溯：生成出的待编排 TestCase id 列表（JSON string[]），便于"已生成"标记与跳转
   generatedCaseIds String?
 
+  // 稳定指纹：hash(workspaceId + module + feature + title + sortedApiHints)
+  // 用于 explore-generate 二次点击同一批功能用例时的去重，以及未来跨入口的幂等性。
+  // 与 TestCase.sourceFingerprint 不混用（那个仅由"接口语义派生"链路赋值）。
+  sourceFingerprint String?
+
   createdBy String?
   updatedBy String?
   createdByUser User? @relation("FuncCaseCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByUser User? @relation("FuncCaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  // 归属轴（资产管理总线 Step 1：Workspace）
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   @@index([module])
   @@index([feature])
   @@index([status])
   @@index([createdAt])
   @@index([createdBy])
+  @@index([workspaceId])
+  @@index([sourceFingerprint])
 }
 
 // 测试步骤模型
@@ -404,7 +425,11 @@ model TestSuite {
   updatedBy String?
   createdByUser User? @relation("TestSuiteCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByUser User? @relation("TestSuiteUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  
+
+  // 归属轴（资产管理总线 Step 1：Workspace）
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
   @@index([status])
   @@index([category])
   @@index([createdAt])
@@ -413,6 +438,7 @@ model TestSuite {
   @@index([nextRunTime])
   @@index([createdBy])
   @@index([updatedBy])
+  @@index([workspaceId])
 }
 
 // 测试套件关联表（多对多）
@@ -669,13 +695,18 @@ model Conversation {
   updatedBy String?
   createdByUser User? @relation("ConversationCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByUser User? @relation("ConversationUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  
+
+  // 归属轴（资产管理总线 Step 1：Workspace）
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
   @@index([createdAt])
   @@index([updatedAt])
   @@index([isStarred])
   @@index([isArchived])
   @@index([createdBy])
   @@index([updatedBy])
+  @@index([workspaceId])
 }
 
 // AI对话消息模型
@@ -729,6 +760,11 @@ model User {
   // 最后登录时间
   lastLoginAt DateTime?
 
+  // 当前工作区（资产管理总线 Step 1：Workspace）
+  // 用于 getCurrentWorkspace 解析当前请求的归属边界
+  currentWorkspaceId String?
+  currentWorkspace   Workspace? @relation("UserCurrentWorkspace", fields: [currentWorkspaceId], references: [id], onDelete: SetNull)
+
   // 业务数据关联（创建/更新人、执行触发人）
   apisCreated           Api[]                @relation("ApiCreatedBy")
   apisUpdated           Api[]                @relation("ApiUpdatedBy")
@@ -740,6 +776,8 @@ model User {
   conversationsUpdated  Conversation[]       @relation("ConversationUpdatedBy")
   funcCasesCreated      InterfaceFunctionalCase[] @relation("FuncCaseCreatedBy")
   funcCasesUpdated      InterfaceFunctionalCase[] @relation("FuncCaseUpdatedBy")
+  swaggerSourcesCreated SwaggerSource[]      @relation("SwaggerSourceCreatedBy")
+  swaggerSourcesUpdated SwaggerSource[]      @relation("SwaggerSourceUpdatedBy")
   suiteExecutionsTriggered TestSuiteExecution[] @relation
   
   @@index([loginName])
@@ -772,4 +810,140 @@ model Session {
   @@index([userId])
   @@index([token])
   @@index([expiresAt])
+}
+
+// ==================== 资产管理总线 ====================
+
+// 工作区模型（资产管理总线 Step 1：归属轴 / AI 上下文边界）
+// - 不做权限隔离，仅做视图边界 + AI 上下文收敛
+// - 资产（Api/TestCase/TestSuite/InterfaceFunctionalCase/Conversation）通过 workspaceId 归属
+// - Category/Tag 是全局分类体系，不挂工作区
+// - 详见 docs/DESIGN_DECISIONS.md 决策 10
+model Workspace {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name        String  @unique
+  slug        String  @unique
+  description String?
+
+  // 默认工作区标记（系统兜底，用于老 token / 未初始化用户的 fallback）
+  // 应用层保证仅一行 isDefault=true
+  isDefault Boolean @default(false)
+
+  // 反向关系
+  apis                     Api[]
+  testCases                TestCase[]
+  testSuites               TestSuite[]
+  interfaceFunctionalCases InterfaceFunctionalCase[]
+  conversations            Conversation[]
+  swaggerSources           SwaggerSource[]
+  testCaseFeedbacks        TestCaseFeedback[]
+  usersCurrent             User[]   @relation("UserCurrentWorkspace")
+
+  @@index([isDefault])
+  @@index([slug])
+}
+
+// SwaggerSource 模型（资产管理总线 Step 2：在线 Swagger 一等公民资产）
+// 与 Api/TestCase 同级，归属工作区，支持「一键重新同步」
+// 详见 docs/DESIGN_DECISIONS.md 决策 10 与 Step 2 plan
+model SwaggerSource {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 用户起的名字（如"订单服务-test"），同工作区内唯一
+  name String
+  // Swagger JSON/YAML 的 URL
+  url  String
+  // 拉取时附加的认证 Header（JSON 字符串，如 {"Authorization":"Bearer xxx"}）
+  // 加密留 v2，先明文存——与 PlatformSettings.aiApiKey 当前口径一致
+  authHeaders String?
+
+  // 默认四层分类（同步落库时填充到接口的 platform/component/feature）
+  defaultPlatform  String?
+  defaultComponent String?
+  defaultFeature   String?
+
+  // 同步状态（最近一次）
+  lastSyncAt      DateTime?
+  lastSyncStatus  String? // success | partial | failed | skipped
+  lastSyncMessage String? // 错误或摘要
+  lastEtag        String? // HTTP ETag/Last-Modified，用于跳过未变更
+  lastHash        String? // 内容 sha256 hash，二次判重
+
+  // 累计统计（用于 UI 卡片快速展示）
+  totalApiCount     Int @default(0)
+  lastImportedCount Int @default(0)
+
+  // 创建人/更新人
+  createdBy     String?
+  updatedBy     String?
+  createdByUser User? @relation("SwaggerSourceCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("SwaggerSourceUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  // 归属轴（必填，删除工作区时级联删除 Swagger 源）
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@index([createdAt])
+}
+
+// TestCaseFeedback 模型（AI 反馈闭环：执行结果 → 吐槽资产 → 反喂生成）
+// 捕获用例执行失败、用户编辑行为、主动吐槽，作为结构化资产反喂 AI 生成
+// 详见 docs/DESIGN_DECISIONS.md 决策 11（待补）
+model TestCaseFeedback {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 来源：执行失败 / 用户编辑用例 / AI 自检 / 用户主动吐槽
+  source String  // "execution_failure" | "user_edit" | "ai_self_critic" | "user_comment"
+
+  // 三向索引：任意一轴都能聚合（为未来升格 AssetEvent 留通道）
+  caseExecutionId String?  // 关联具体那次执行（执行失败时必填，其他可空）
+  testCaseId      String?  // 关联用例（采纳后通常都有）
+  apiId           String?  // 关键：让接口侧能反查"它在多少用例中翻车过"
+  stepNodeId      String?  // 步骤节点 id（定位到具体步骤）
+
+  // 结构化归因（不要自由文本，category 给 AI 当索引键）
+  category String  // "api_path_changed" | "assertion_wrong" | "param_constraint_missed"
+                   // | "business_code_assumption" | "missing_precondition"
+                   // | "wrong_variable_ref" | "other"
+  targetField String?  // 涉及的字段路径，如 "response.returnCode" / "body.adjustmentType"
+
+  // 自然语言部分（用于 AI 阅读 + UI 展示）
+  summary     String   // 一句话归因
+  detail      String?  // 详情（AI 分析 / 用户描述）
+  suggestion  String?  // 修复建议
+
+  // 证据快照（保命用：审计 + 反馈不会因后续数据变化而失真）
+  evidence String?  // JSON: { request, response, assertions, errorMessage }
+
+  // 状态机
+  status String @default("open")  // "open"(待处理) | "acknowledged"(已确认有效)
+                                  // | "fixed"(已修复) | "wontfix"(误报/无关)
+
+  // 谁打的标 / 谁处理的
+  createdBy String?
+  resolvedBy String?
+  resolvedAt DateTime?
+
+  // 工作区归属（决策 10：归属轴，按 workspace 收敛）
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  // 反馈被 N 次生成命中（每次 AI 查询并采纳后 ++，用于度量"反馈进化"是否真在起作用）
+  consumedCount Int @default(0)
+
+  @@index([apiId, status])           // 主查询路径：按接口拉"已确认"反馈
+  @@index([testCaseId])
+  @@index([caseExecutionId])
+  @@index([category, status])         // 全局看：哪类错误最多
+  @@index([workspaceId, status])
+  @@index([createdAt])
 }

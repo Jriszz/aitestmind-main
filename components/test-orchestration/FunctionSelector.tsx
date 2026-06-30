@@ -48,18 +48,42 @@ export default function FunctionSelector({ onSelect }: FunctionSelectorProps) {
 
     let syntax = selectedFunction.id;
 
-    // 构建参数列表
     if (selectedFunction.parameters.length > 0) {
-      const params = selectedFunction.parameters.map(param => {
-        const value = paramValues[param.name];
-        if (value === undefined || value === '') {
-          // 使用默认值或空
-          return param.default !== undefined ? formatParamValue(param.default, param.type) : '';
-        }
-        return formatParamValue(value, param.type);
-      }).filter(Boolean); // 移除空参数
+      // 思路：把"等于默认值"的参数省掉，让生成结果尽量短；
+      // 一旦中间省略了任何参数，后续参数必须改用 name=value 关键字形式
+      // （否则位置就错乱了，例如 datetime 跳过 format 直接给 days）
+      const parts: string[] = [];
+      let switchedToKwargs = false;
 
-      syntax = `${syntax}(${params.join(', ')})`;
+      selectedFunction.parameters.forEach(param => {
+        const rawValue = paramValues[param.name];
+        const isUnset = rawValue === undefined || rawValue === '';
+        const effectiveValue = isUnset ? param.default : rawValue;
+
+        // 必填参数即使等于默认值也输出；可选参数等于默认值就跳过
+        const equalsDefault =
+          !param.required &&
+          param.default !== undefined &&
+          // 数字用 == 比较，避免 "1" 与 1 不等
+          // eslint-disable-next-line eqeqeq
+          effectiveValue == param.default;
+
+        if (isUnset && param.default === undefined) {
+          // 没值也没默认值的必填参数，留个空位让用户后续手填
+          switchedToKwargs = true;
+          return;
+        }
+
+        if (equalsDefault) {
+          switchedToKwargs = true;
+          return;
+        }
+
+        const formatted = formatParamValue(effectiveValue, param.type);
+        parts.push(switchedToKwargs ? `${param.name}=${formatted}` : formatted);
+      });
+
+      syntax = `${syntax}(${parts.join(', ')})`;
     } else {
       syntax = `${syntax}()`;
     }
@@ -67,7 +91,7 @@ export default function FunctionSelector({ onSelect }: FunctionSelectorProps) {
     // 完整语法：${{函数调用}}
     const fullSyntax = `\${{${syntax}}}`;
     onSelect(fullSyntax);
-    
+
     // 重置状态
     setSelectedFunction(null);
     setParamValues({});

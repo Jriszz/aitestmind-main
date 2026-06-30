@@ -17,6 +17,18 @@ function buildMinimalFlowConfig() {
 }
 
 describe('Task 11: TestCase priority (P0-P3)', () => {
+  let workspaceId: string;
+
+  beforeAll(async () => {
+    // 资产管理总线 Step 1：测试夹具的工作区
+    const ws = await prisma.workspace.upsert({
+      where: { slug: 'test-default' },
+      update: {},
+      create: { name: '测试工作区', slug: 'test-default', description: 'jest fixtures', isDefault: false },
+    });
+    workspaceId = ws.id;
+  });
+
   beforeEach(async () => {
     await prisma.testStep.deleteMany({
       where: { testCase: { name: { contains: 'Priority测试' } } },
@@ -53,6 +65,7 @@ describe('Task 11: TestCase priority (P0-P3)', () => {
         category: null,
         tags: '[]',
         flowConfig: JSON.stringify(buildMinimalFlowConfig()),
+        workspaceId,
       } as any,
     });
 
@@ -103,6 +116,7 @@ describe('Task 11: TestCase priority (P0-P3)', () => {
         category: null,
         tags: '[]',
         flowConfig: JSON.stringify(buildMinimalFlowConfig()),
+        workspaceId,
       } as any,
     });
 

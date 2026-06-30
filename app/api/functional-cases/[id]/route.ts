@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentWorkspace } from '@/lib/auth';
 import { safeJsonStringify } from '@/lib/json-utils';
 import { rowToCase } from '@/lib/functional-case-utils';
 import type { FunctionalCase } from '@/types/functional-case';
@@ -9,12 +9,19 @@ export const dynamic = 'force-dynamic';
 
 // GET /api/functional-cases/[id]
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   try {
-    const row = await (prisma as any).interfaceFunctionalCase.findUnique({ where: { id } });
+    // 资产管理总线 Step 1：跨工作区 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const row = await (prisma as any).interfaceFunctionalCase.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+    });
     if (!row) {
       return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 });
     }
@@ -36,6 +43,18 @@ export async function PUT(
   try {
     const currentUser = await getCurrentUser(request);
     const userId = currentUser?.user?.id ?? null;
+    // 资产管理总线 Step 1：跨工作区 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existing = await (prisma as any).interfaceFunctionalCase.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 });
+    }
 
     const c = (await request.json()) as FunctionalCase;
 
@@ -76,11 +95,23 @@ export async function PUT(
 
 // DELETE /api/functional-cases/[id]
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   try {
+    // 资产管理总线 Step 1：跨工作区 404
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+    const existing = await (prisma as any).interfaceFunctionalCase.findFirst({
+      where: { id, workspaceId: ws.workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 });
+    }
     await (prisma as any).interfaceFunctionalCase.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch (error: any) {

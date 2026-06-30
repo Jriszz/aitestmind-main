@@ -12,8 +12,17 @@ describe('Task 10: AI Integration Tests', () => {
   let categoryId: string;
   let apiId: string;
   let deleteApiId: string;
+  let workspaceId: string;
 
   beforeAll(async () => {
+    // 资产管理总线 Step 1：测试夹具的工作区
+    const ws = await prisma.workspace.upsert({
+      where: { slug: 'test-default' },
+      update: {},
+      create: { name: '测试工作区', slug: 'test-default', description: 'jest fixtures', isDefault: false },
+    });
+    workspaceId = ws.id;
+
     // 清理测试数据
     await prisma.testCase.deleteMany({
       where: { name: { contains: 'AI集成测试' } }
@@ -43,6 +52,7 @@ describe('Task 10: AI Integration Tests', () => {
         url: 'http://test.com/api/resource',
         path: '/api/resource/create',
         categoryId: categoryId,
+        workspaceId,
         requestHeaders: '{}',
         requestQuery: '{}',
         requestBody: JSON.stringify({
@@ -72,6 +82,7 @@ describe('Task 10: AI Integration Tests', () => {
         url: 'http://test.com/api/resource/{id}',
         path: '/api/resource/{id}',
         categoryId: categoryId,
+        workspaceId,
         requestHeaders: '{}',
         requestQuery: '{}',
         requestBody: '{}',
@@ -189,7 +200,7 @@ describe('Task 10: AI Integration Tests', () => {
   test('工具函数应该能够获取 API 详情', async () => {
     const { getApiDetail } = require('../lib/ai-tools');
 
-    const detail = await getApiDetail(apiId);
+    const detail = await getApiDetail(apiId, workspaceId);
 
     expect(detail.id).toBe(apiId);
     expect(detail.name).toBe('AI集成测试-创建资源');
@@ -206,6 +217,7 @@ describe('Task 10: AI Integration Tests', () => {
 
     const result = await smartSearchDeleteApi({
       createApiId: apiId,
+      workspaceId,
     });
 
     // 该 API 是 POST 方法，名称包含"创建"，响应体有 id，应该判断为会创建数据
@@ -259,7 +271,7 @@ describe('Task 10: AI Integration Tests', () => {
       }
     ];
 
-    const results = await createTestCases(testCases);
+    const results = await createTestCases(testCases, null, workspaceId);
 
     expect(results.length).toBe(1);
     expect(results[0].name).toBe('AI集成测试-正常创建');
@@ -294,12 +306,13 @@ describe('Task 10: AI Integration Tests', () => {
     expect(searchResults.length).toBeGreaterThan(0);
 
     // 2. 获取第一个 API 的详情
-    const apiDetail = await getApiDetail(searchResults[0].id);
+    const apiDetail = await getApiDetail(searchResults[0].id, workspaceId);
     expect(apiDetail).toBeTruthy();
 
     // 3. 判断是否需要清理
     const cleanupInfo = await smartSearchDeleteApi({
       createApiId: apiDetail.id,
+      workspaceId,
     });
     expect(cleanupInfo.needCleanup).toBe(true);
 
@@ -336,7 +349,7 @@ describe('Task 10: AI Integration Tests', () => {
       }
     ];
 
-    const results = await createTestCases(testCases);
+    const results = await createTestCases(testCases, null, workspaceId);
     expect(results.length).toBe(1);
 
     console.log('✅ 测试通过：完整流程测试');
@@ -355,7 +368,7 @@ describe('Task 10: AI Integration Tests', () => {
   test('边界情况：不存在的 API ID', async () => {
     const { getApiDetail } = require('../lib/ai-tools');
 
-    await expect(getApiDetail('non-existent-id')).rejects.toThrow('API 不存在');
+    await expect(getApiDetail('non-existent-id', workspaceId)).rejects.toThrow('API 不存在');
 
     console.log('✅ 测试通过：不存在的 API ID');
   });
@@ -378,7 +391,7 @@ describe('Task 10: AI Integration Tests', () => {
     }));
 
     const startTime = Date.now();
-    const results = await createTestCases(testCases);
+    const results = await createTestCases(testCases, null, workspaceId);
     const endTime = Date.now();
 
     expect(results.length).toBe(10);

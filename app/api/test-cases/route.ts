@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentWorkspace } from '@/lib/auth';
 import { safeJsonParse, safeJsonStringify } from '@/lib/json-utils';
 import { logger, OperationType } from '@/lib/logger';
+import { normalizeAndValidateTags } from '@/lib/tag-validator';
 
 const ALLOWED_PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3'] as const);
 function normalizePriority(input: any): 'P0' | 'P1' | 'P2' | 'P3' {
@@ -15,18 +16,7 @@ function normalizePriority(input: any): 'P0' | 'P1' | 'P2' | 'P3' {
   return input as any;
 }
 
-function normalizeTagsForStatus(tags: any, status?: string | null): string[] {
-  let list: any[] = [];
-  if (Array.isArray(tags)) {
-    list = tags;
-  } else if (typeof tags === 'string') {
-    const parsed = safeJsonParse(tags);
-    list = Array.isArray(parsed) ? parsed : [];
-  }
-
-  const normalized = Array.from(new Set(list.filter((tag) => typeof tag === 'string' && tag.trim())));
-  return status === 'active' ? normalized.filter((tag) => tag !== '待编排') : normalized;
-}
+// 已移至 lib/tag-validator.ts（决策 11：标签枚举校验）
 
 // 清理节点中的执行结果（后端保护层）
 function cleanExecutionFromFlowConfig(flowConfig: any): any {
@@ -63,8 +53,14 @@ function cleanExecutionFromConfig(config: any): any {
 // GET /api/test-cases - 获取所有测试用例
 export async function GET(request: NextRequest) {
   const startTime = Date.now();
-  
+
   try {
+    // 资产管理总线 Step 1：解析工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     const tag = searchParams.get('tag');
@@ -75,7 +71,7 @@ export async function GET(request: NextRequest) {
     // 记录请求
     logger.apiRequest('GET', '/api/test-cases', OperationType.READ, { status, tag, apiCategoriesRaw, page, pageSize });
 
-    const where: any = {};
+    const where: any = { workspaceId: ws.workspaceId };
     if (status) where.status = status;
     if (tag) where.tags = { contains: `"${tag.replace(/"/g, '\\"')}"` };
 
@@ -203,6 +199,11 @@ export async function POST(request: NextRequest) {
   try {
     const currentUser = await getCurrentUser(request);
     const userId = currentUser?.user?.id ?? null;
+    // 资产管理总线 Step 1：归属当前工作区
+    const ws = await getCurrentWorkspace(request);
+    if (!ws) {
+      return NextResponse.json({ success: false, error: '未登录或无可用工作区' }, { status: 401 });
+    }
 
     const body = await request.json();
     const { name, description, status, category, tags, priority, flowConfig, steps } = body;
@@ -214,8 +215,17 @@ export async function POST(request: NextRequest) {
     const cleanedFlowConfig = cleanExecutionFromFlowConfig(flowConfig);
     const normalizedPriority = normalizePriority(priority);
 
+    // 标签枚举校验（决策 11）
+    const tagResult = normalizeAndValidateTags(tags, status || 'draft');
+    if (tagResult.error) {
+      return NextResponse.json(
+        { success: false, error: `标签校验失败: ${tagResult.error}` },
+        { status: 400 }
+      );
+    }
+
     logger.db(OperationType.CREATE, 'TestCase', 'create', { name, stepsCount: steps?.length });
-    
+
     // 创建测试用例和步骤
     const testCase = await prisma.testCase.create({
       data: {
@@ -224,8 +234,9 @@ export async function POST(request: NextRequest) {
         status: status || 'draft',
         priority: normalizedPriority,
         category: category || null,
-        tags: safeJsonStringify(normalizeTagsForStatus(tags, status || 'draft')),
+        tags: safeJsonStringify(tagResult.tags),
         flowConfig: safeJsonStringify(cleanedFlowConfig) || '{}',
+        workspaceId: ws.workspaceId,
         ...(userId && { createdBy: userId, updatedBy: userId }),
         steps: {
           create: steps?.map((step: any, index: number) => ({

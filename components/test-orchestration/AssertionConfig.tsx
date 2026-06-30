@@ -80,6 +80,24 @@ export default function AssertionConfig({
     setShowValueSelector(null);
   };
 
+  // 根据 operator 返回期望值输入框的提示。让用户/AI 第一眼看到该填什么形态的值
+  const getExpectedPlaceholder = (operator: string): string => {
+    if (operator === 'in' || operator === 'notIn' || operator === 'eachEquals') {
+      return t('expectedPlaceholderArray');
+    }
+    if (operator === 'eachMatches') {
+      return t('expectedPlaceholderRegex');
+    }
+    if (
+      operator === 'lengthEquals' ||
+      operator === 'lengthGreaterThan' ||
+      operator === 'lengthLessThan'
+    ) {
+      return t('expectedPlaceholderInteger');
+    }
+    return t('expectedPlaceholder');
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -219,19 +237,32 @@ export default function AssertionConfig({
                     <SelectItem value="lessThan">{t('lessThan')}</SelectItem>
                     <SelectItem value="exists">{t('exists')}</SelectItem>
                     <SelectItem value="notExists">{t('notExists')}</SelectItem>
+                    {/* 非空（柜台流水号/凭证号场景，不要用 exists） */}
+                    <SelectItem value="notEmpty">{t('notEmpty')}</SelectItem>
+                    {/* 集合（柜台业务码枚举，期望值用 JSON 数组） */}
+                    <SelectItem value="in">{t('in')}</SelectItem>
+                    <SelectItem value="notIn">{t('notIn')}</SelectItem>
+                    {/* 长度（分页/明细笔数） */}
+                    <SelectItem value="lengthEquals">{t('lengthEquals')}</SelectItem>
+                    <SelectItem value="lengthGreaterThan">{t('lengthGreaterThan')}</SelectItem>
+                    <SelectItem value="lengthLessThan">{t('lengthLessThan')}</SelectItem>
+                    {/* 遍历（过滤生效、明细归属一致性） */}
+                    <SelectItem value="eachEquals">{t('eachEquals')}</SelectItem>
+                    <SelectItem value="eachMatches">{t('eachMatches')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* 期望值 */}
+              {/* 期望值：exists/notExists/notEmpty 不需要 */}
               {assertion.operator !== 'exists' &&
-                assertion.operator !== 'notExists' && (
+                assertion.operator !== 'notExists' &&
+                assertion.operator !== 'notEmpty' && (
                   <>
                     <div className="space-y-2">
                       <Label className="text-xs">{t('expectedValue')}</Label>
                       <div className="flex gap-2">
                         <Input
-                          placeholder={t('expectedPlaceholder')}
+                          placeholder={getExpectedPlaceholder(assertion.operator)}
                           value={assertion.expected?.toString() || ''}
                           onChange={(e) =>
                             updateAssertion(index, { expected: e.target.value })
@@ -288,6 +319,7 @@ export default function AssertionConfig({
                           <SelectItem value="auto">{t('auto')}</SelectItem>
                           <SelectItem value="string">{t('string')}</SelectItem>
                           <SelectItem value="number">{t('number')}</SelectItem>
+                          <SelectItem value="decimal">{t('decimal')}</SelectItem>
                           <SelectItem value="boolean">{t('boolean')}</SelectItem>
                           <SelectItem value="object">{t('object')}</SelectItem>
                           <SelectItem value="array">{t('array')}</SelectItem>
